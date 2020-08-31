@@ -17,11 +17,13 @@ endif
 
 
 
+libyaml = cc.find_library('libyaml')
 executable('ristsender',
-	['ristsender.c',srp_shared, tools_deps, rev_target],
+	['ristsender.c', 'yamlparse.c', srp_shared, tools_deps, rev_target],
 	link_with : [librist],
 	dependencies: [
 		threads,
+		libyaml,
 		stdatomic_dependency,
 		tools_dependencies
 	],
@@ -29,9 +31,9 @@ executable('ristsender',
 	install: true)
 
 executable('ristreceiver',
-	['ristreceiver.c', srp_shared, tools_deps, rev_target],
+	['ristreceiver.c', 'yamlparse.c', srp_shared, tools_deps, rev_target],
 	link_with : [librist],
-	dependencies: [tools_dependencies],
+	dependencies: [tools_dependencies, libyaml],
 	include_directories: inc,
 	install: true)
 

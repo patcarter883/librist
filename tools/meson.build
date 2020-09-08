@@ -35,9 +35,10 @@ if use_libyaml
 				toolchainfile = '-DCMAKE_TOOLCHAIN_FILE='+meson.current_source_dir() + '/common/ci/x86_64-w64-mingw32.cmake'
 			endif
 		endif
-		libyaml_proj = cmake.subproject('libyaml', cmake_options: ['-DCMAKE_CXX_FLAGS="-Werror"','-DENABLE_TESTING=OFF', '-DENABLE_PROGRAMS=OFF', '-DCMAKE_POSITION_INDEPENDENT_CODE=ON', toolchainfile], default_options: ['werror=false'])
+		libyaml_proj = cmake.subproject('libyaml', cmake_options: ['-DENABLE_TESTING=OFF', '-DENABLE_PROGRAMS=OFF', '-DCMAKE_POSITION_INDEPENDENT_CODE=ON', toolchainfile], default_options: ['werror=false'])
 		libyaml = libyaml_proj.dependency('yaml')
 	endif
+	tools_dependencies += [libyaml]
 endif 
 
 

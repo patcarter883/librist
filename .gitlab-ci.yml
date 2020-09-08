@@ -48,6 +48,7 @@ build-macos:
                       --werror
                       -Ddefault_library=both
                       -Duse_mbedtls=false
+                      -Duse_libyaml=false
         - ninja -C build
 
 analyze-ubuntu:

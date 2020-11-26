@@ -41,15 +41,11 @@ if use_libyaml
 	tools_dependencies += [libyaml]
 endif 
 
-
-
-libyaml = cc.find_library('libyaml')
 executable('ristsender',
 	['ristsender.c', 'yamlparse.c', srp_shared, tools_deps, rev_target],
 	link_with : [librist],
 	dependencies: [
 		threads,
-		libyaml,
 		stdatomic_dependency,
 		tools_dependencies
 	],
@@ -59,7 +55,7 @@ executable('ristsender',
 executable('ristreceiver',
 	['ristreceiver.c', 'yamlparse.c', srp_shared, tools_deps, rev_target],
 	link_with : [librist],
-	dependencies: [tools_dependencies, libyaml],
+	dependencies: [tools_dependencies],
 	include_directories: inc,
 	install: true)
 

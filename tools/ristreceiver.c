@@ -168,7 +168,12 @@ static int cb_recv(void *arg, const struct rist_data_block *b)
 					payload = (uint8_t *)b->payload;
 					payload_len = b->payload_len;
 				}
-				int ret = udpsocket_send(callback_object->mpeg[i], payload, payload_len);
+				ssize_t ret = -1;
+				if (callback_object->mpeg[i] == STDOUT_FILENO) {
+					ret = write(callback_object->mpeg[i], payload, payload_len);
+				} else {
+					ret = udpsocket_send(callback_object->mpeg[i], payload, payload_len);
+				}
 				if (udp_config->rtp)
 					free(payload);
 				if (ret <= 0 && errno != ECONNREFUSED)
@@ -499,6 +504,14 @@ int main(int argc, char *argv[])
 		if (!outputtoken)
 			break;
 
+#ifndef _WIN32
+		if (strcmp(outputtoken, "-") == 0) {
+			callback_object.mpeg[i] = STDOUT_FILENO;
+			callback_object.udp_config[i] = calloc(1, sizeof(*callback_object.udp_config[i]));
+			atleast_one_socket_opened = true;
+			goto next;
+		}
+#endif
 		// First parse extra parameters (?miface=lo&stream-id=1971) and separate the address
 		// We are using the rist_parse_address function to create a config object that does not really
 		// belong to the udp output. We do this only to avoid writing another parser for the two url

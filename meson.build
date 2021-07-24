@@ -154,6 +154,9 @@ if not builtin_cjson
 			builtin_cjson = true
 		endif
 	endif
+	if cc.check_header('linux/if_tun.h') and get_option('use_tun')
+		add_project_arguments(['-DUSE_TUN'], language: 'c')
+	endif
 endif
 if builtin_cjson
 	message('Using builtin cJSON library')

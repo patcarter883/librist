@@ -20,7 +20,7 @@
 /* Track PROTOCOL and API changes */
 #define RIST_PEER_UDPSOCKET_VERSION (0)
 #define RIST_PEER_CONFIG_VERSION (0)
-#define RIST_UDP_CONFIG_VERSION (0)
+#define RIST_UDP_CONFIG_VERSION (1)
 #define RIST_STATS_VERSION (0)
 
 /* Default peer config values */
@@ -74,7 +74,9 @@
 #define RIST_URL_PARAM_STREAM_ID "stream-id"
 #define RIST_URL_PARAM_RTP_TIMESTAMP "rtp-timestamp"
 #define RIST_URL_PARAM_RTP_SEQUENCE "rtp-sequence"
-#define RIST_URL_PARAP_RTP_OUTPUT_PTYPE "rtp-ptype"
+#define RIST_URL_PARAM_RTP_OUTPUT_PTYPE "rtp-ptype"
+#define RIST_URL_PARAM_MUX_MODE "mux-mode"
+#define RIST_URL_PARAM_MUX_FILTER "mux-filter"
 /* Rist additional parameter names */
 #define RIST_URL_PARAM_VIRT_SRC_PORT "virt-src-port"
 #define RIST_URL_PARAM_PROFILE "profile"
@@ -87,6 +89,14 @@
 #define RIST_ERR_INVALID_PROFILE -4
 #define RIST_ERR_MISSING_CALLBACK_FUNCTION -5
 #define RIST_ERR_NULL_CREDENTIALS -6
+
+enum rist_mux_mode
+{
+	RIST_MUX_MODE_RAW = 0,
+	RIST_MUX_MODE_AUTO = 1,
+	RIST_MUX_MODE_VIRT_SOURCE_PORT = 2,
+	RIST_MUX_MODE_IPV4 = 3,
+};
 
 enum rist_nack_type
 {
@@ -207,6 +217,8 @@ struct rist_udp_config
 	int rtp;
 	uint8_t rtp_ptype;
 	uint16_t stream_id;
+	int mux_mode;
+	char mux_filter[RIST_MAX_STRING_SHORT];
 };
 
 struct rist_peer_config

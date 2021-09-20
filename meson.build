@@ -154,15 +154,16 @@ if not builtin_cjson
 			builtin_cjson = true
 		endif
 	endif
-	if cc.check_header('linux/if_tun.h') and get_option('use_tun')
-		add_project_arguments(['-DUSE_TUN'], language: 'c')
-	endif
 endif
 if builtin_cjson
 	message('Using builtin cJSON library')
 	cjson_lib = declare_dependency( compile_args : '-DCJSON_HIDE_SYMBOLS',
 									sources: 'contrib/contrib_cJSON/cjson/cJSON.c',
 									include_directories : include_directories('contrib/contrib_cJSON'))
+endif
+
+if cc.check_header('linux/if_tun.h') and get_option('use_tun')
+	add_project_arguments(['-DUSE_TUN'], language: 'c')
 endif
 
 if use_mbedtls

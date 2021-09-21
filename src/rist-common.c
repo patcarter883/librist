@@ -1876,6 +1876,8 @@ static void rist_recv_oob_data(struct rist_peer *peer, struct rist_buffer *paylo
 	if (ctx->oob_data_enabled && ctx->oob_data_callback)
 	{
 		struct rist_oob_block oob_block;
+		if (ctx->oob_current_peer == NULL || ctx->oob_current_peer->dead)
+			ctx->oob_current_peer = peer;
 		oob_block.peer = peer;
 		oob_block.payload = payload->data;
 		oob_block.payload_len = payload->size;

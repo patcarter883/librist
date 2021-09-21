@@ -807,6 +807,10 @@ int main(int argc, char *argv[])
 			}
 		}
 
+#ifdef USE_TUN
+		peer_args.callback_tun_object = &callback_tun_object;
+#endif
+
 		// Setup the output rist objects
 		if (rist_listens && i > 0) {
 			if (callback_object[0].udp_config->mux_mode == RIST_MUX_MODE_RAW || udp_config->mux_mode == RIST_MUX_MODE_RAW) {
@@ -831,7 +835,6 @@ int main(int argc, char *argv[])
 			if (!callback_tun_object.sender_ctx) {
 				callback_tun_object.sender_ctx = callback_object[i].sender_ctx;
 			}
-			peer_args.callback_tun_object = &callback_tun_object;
 		}
 #endif
 

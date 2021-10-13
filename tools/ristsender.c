@@ -909,7 +909,8 @@ next:
 	thread_started[0] = true;
 
 	for (size_t i = 0; i < MAX_INPUT_COUNT; i++) {
-		if (callback_object[i].sender_ctx && rist_start(callback_object[i].sender_ctx) == -1) {
+		if (((rist_listens && i == 0) || !rist_listens) &&
+			 callback_object[i].sender_ctx && rist_start(callback_object[i].sender_ctx) == -1) {
 			rist_log(&logging_settings, RIST_LOG_ERROR, "Could not start rist sender\n");
 			goto shutdown;
 		}

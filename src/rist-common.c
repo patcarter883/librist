@@ -14,6 +14,7 @@
 #include "udpsocket.h"
 #include "endian-shim.h"
 #include "time-shim.h"
+#include "tools/oob_shared.h"
 #if HAVE_MBEDTLS
 #include "eap.h"
 #endif
@@ -905,7 +906,7 @@ static void receiver_output(struct rist_receiver *ctx, struct rist_flow *f)
 							delay_rtc / RIST_CLOCK, delay / RIST_CLOCK,
 							recovery_buffer_ticks / RIST_CLOCK, f->time_offset / RIST_CLOCK,
 							drop? "dropping" : "releasing");
-					
+
 				}
 				else if (b->target_output_time > now) {
 					// This is how we keep the buffer at the correct level
@@ -2471,23 +2472,35 @@ void rist_peer_rtcp(struct evsocket_ctx *evctx, void *arg)
 			}
 			if (gre->prot_type == htobe16(RIST_GRE_PROTOCOL_TYPE_FULL))
 			{
-				payload.type = RIST_PAYLOAD_TYPE_DATA_OOB;
-				goto protocol_bypass;
-			}
-			if (gre->prot_type == htobe16(RIST_GRE_PROTOCOL_TYPE_EAPOL))
+				struct ipheader *ip = (struct ipheader *)(recv_buf + gre_size);
+				//This is an ugly hacky workaround for a broken implementation that sends full GRE encapsulated
+				//packets with source & destination ip of 0.0.0.0 when we're sending in reduced mode.
+				if (recv_bufsize >= (int)(sizeof(struct rist_protocol_hdr) + gre_size + sizeof(struct ipheader) + sizeof(struct udpheader)) &&
+					ip->iph_destip == 0 && ip->iph_sourceip == 0 && ip->iph_protocol == 0x11) {
+					struct udpheader *udp = (struct udpheader *)(recv_buf + gre_size + sizeof(*ip));
+					payload.src_port = be16toh(udp->udph_srcport);
+					payload.dst_port = be16toh(udp->udph_destport);
+					proto_hdr = (struct rist_protocol_hdr *)(recv_buf + gre_size + sizeof(*ip) +sizeof(*udp) - 4);
+					gre_size = gre_size + sizeof(*ip) +sizeof(*udp) - 4;
+				} else {
+					payload.type = RIST_PAYLOAD_TYPE_DATA_OOB;
+					goto protocol_bypass;
+				}
+			} else if (gre->prot_type == htobe16(RIST_GRE_PROTOCOL_TYPE_EAPOL))
 			{
 				payload.type = RIST_PAYLOAD_TYPE_EAPOL;
 				goto protocol_bypass;
+			} else {
+				// Make sure we have enough bytes
+				if (recv_bufsize < (int)(sizeof(struct rist_protocol_hdr)+gre_size)) {
+					rist_log_priv(get_cctx(peer), RIST_LOG_ERROR, "Packet too small: %d bytes, ignoring ...\n", recv_bufsize);
+					return;
+				}
+				/* Map the first subheader and rtp payload area to our structure */
+				proto_hdr = (struct rist_protocol_hdr *)(recv_buf + gre_size);
+				payload.src_port = be16toh(proto_hdr->src_port);
+				payload.dst_port = be16toh(proto_hdr->dst_port);
 			}
-			// Make sure we have enough bytes
-			if (recv_bufsize < (int)(sizeof(struct rist_protocol_hdr)+gre_size)) {
-				rist_log_priv(get_cctx(peer), RIST_LOG_ERROR, "Packet too small: %d bytes, ignoring ...\n", recv_bufsize);
-				return;
-			}
-			/* Map the first subheader and rtp payload area to our structure */
-			proto_hdr = (struct rist_protocol_hdr *)(recv_buf + gre_size);
-			payload.src_port = be16toh(proto_hdr->src_port);
-			payload.dst_port = be16toh(proto_hdr->dst_port);
 		}
 		else
 		{
@@ -2692,7 +2705,7 @@ protocol_bypass:
 		}
 
 		// Peer was not found, create a new one
-		if ((peer->listening || peer->multicast) && (payload.type == RIST_PAYLOAD_TYPE_RTCP || cctx->profile == RIST_PROFILE_SIMPLE)) {
+		if ((peer->listening || peer->multicast) && ((payload.type == RIST_PAYLOAD_TYPE_RTCP || cctx->profile == RIST_PROFILE_SIMPLE) || (cctx->profile == RIST_PROFILE_MAIN && peer->sender_ctx != NULL))) {
 			/* No match, new peer creation when on listening mode */
 			p = peer_initialize(NULL, peer->sender_ctx, peer->receiver_ctx);
 			p->adv_peer_id = ++cctx->peer_counter;

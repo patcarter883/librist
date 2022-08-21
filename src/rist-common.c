@@ -2291,6 +2291,14 @@ void rist_peer_rtcp(struct evsocket_ctx *evctx, void *arg)
 		if (peer->peer_data && (current_state != peer->peer_data->dead && peer->peer_data->parent))
 			--peer->peer_data->parent->child_alive_count;
 		peer->dead_since = timestampNTP_u64();
+		if (peer->receiver_ctx != NULL) {
+			struct rist_common_ctx *cctx = &peer->receiver_ctx->common;
+			int connection_message = RIST_CLIENT_TIMED_OUT;
+			//if (cctx->auth.disconn_cb)
+			//	cctx->auth.disconn_cb(cctx->auth.arg, peer);
+			if (cctx->connection_status_callback)
+				cctx->connection_status_callback(cctx->connection_status_callback_argument, peer, connection_message);
+		}
 	}
 
 	static void rist_peer_recv(struct evsocket_ctx *evctx, int fd, short revents, void *arg)

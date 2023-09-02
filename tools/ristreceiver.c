@@ -10,6 +10,7 @@
 #include "headers.h"
 #include "librist/version.h"
 #include "config.h"
+#include "time-shim.h"
 #if HAVE_SRP_SUPPORT
 #include "librist/librist_srp.h"
 #include "srp_shared.h"
@@ -54,6 +55,8 @@ static int signalReceived = 0;
 static struct rist_logging_settings logging_settings = LOGGING_SETTINGS_INITIALIZER;
 enum rist_profile profile = RIST_PROFILE_MAIN;
 static int peer_connected_count = 0;
+pthread_mutex_t last_received_mutex;
+static uint64_t last_received = 0;
 
 #if HAVE_PROMETHEUS_SUPPORT
 struct rist_prometheus_stats *prom_stats_ctx;
@@ -74,6 +77,7 @@ static struct option long_options[] = {
 { "secret",          required_argument, NULL, 's' },
 { "encryption-type", required_argument, NULL, 'e' },
 { "profile",         required_argument, NULL, 'p' },
+{ "packet-timeout",  required_argument, NULL, 'T' },
 #ifdef USE_TUN
 { "tun",             required_argument, NULL, 't' },
 { "tun-mode",        required_argument, NULL, 'm' },
@@ -117,6 +121,7 @@ const char help_str[] = "Usage: %s [OPTIONS] \nWhere OPTIONS are:\n"
 "       -S | --statsinterval value (ms)           | Interval at which stats get printed, 0 to disable        |\n"
 "       -v | --verbose-level value                | To disable logging: -1, log levels match syslog levels   |\n"
 "       -r | --remote-logging IP:PORT             | Send logs and stats to this IP:PORT using udp messages   |\n"
+"       -T | --packet-timeout value (ms)          | Specify a timeout between packets, if exceeded exit non 0|\n"
 #if HAVE_SRP_SUPPORT
 "       -F | --srpfile filepath                   | When in listening mode, use this file to hold the list   |\n"
 "                                                 | of usernames and passwords to validate against. Use the  |\n"
@@ -205,6 +210,22 @@ static void connection_status_callback(void *arg, struct rist_peer *peer, enum r
 				peer, peer_connection_status, peer_connected_count);
 }
 
+static void *timeout_watchdog(void *p) {
+       uint64_t timeout_ms = *(int*)p;
+       timespec_t ts;
+       while (true) {
+               sleep(1);
+               clock_gettime(CLOCK_MONOTONIC, &ts);
+               uint64_t check_now = (ts.tv_sec *1000) +ts.tv_nsec / 1000000;
+               pthread_mutex_lock(&last_received_mutex);
+               if (check_now > last_received && (check_now - last_received) > timeout_ms) {
+                       fprintf(stderr, "Packet timeout of %lu(ms) exceeded by %lu(ms), exiting\n", timeout_ms, (check_now - last_received));
+                       exit(1);
+               }
+        pthread_mutex_unlock(&last_received_mutex);
+    }
+}
+
 static int cb_recv(void *arg, struct rist_data_block *b)
 {
 	struct rist_callback_object *callback_object = (void *) arg;
@@ -284,6 +305,12 @@ static int cb_recv(void *arg, struct rist_data_block *b)
 					rist_log(&logging_settings, RIST_LOG_ERROR, "Error %d sending udp packet to socket %d\n", errno, callback_object->mpeg[i]);
 				found = 1;
 			}
+
+			timespec_t ts;
+			clock_gettime(CLOCK_MONOTONIC, &ts);
+			pthread_mutex_lock(&last_received_mutex);
+			last_received = (ts.tv_sec *1000) + ts.tv_nsec /1000000;
+			pthread_mutex_unlock(&last_received_mutex);
 		}
 	}
 
@@ -515,6 +542,7 @@ int main(int argc, char *argv[])
 	enum rist_log_level loglevel = RIST_LOG_INFO;
 	int statsinterval = 1000;
 	char *remote_log_address = NULL;
+	int packet_timeout = 0;
 	if (pthread_mutex_init(&signal_lock, NULL) != 0)
 	{
 		fprintf(stderr, "Could not initialize signal lock\n");
@@ -554,7 +582,7 @@ int main(int argc, char *argv[])
 
 	rist_log(&logging_settings, RIST_LOG_INFO, "Starting ristreceiver version: %s libRIST library: %s API version: %s\n", LIBRIST_VERSION, librist_version(), librist_api_version());
 
-	while ((c = getopt_long(argc, argv, "r:i:o:b:s:e:t:m:p:S:v:F:h:uM", long_options, &option_index)) != -1) {
+	while ((c = getopt_long(argc, argv, "r:T:i:o:b:s:e:t:m:p:S:v:F:h:uM", long_options, &option_index)) != -1) {
 		switch (c) {
 		case 'i':
 			inputurl = strdup(optarg);
@@ -590,6 +618,9 @@ int main(int argc, char *argv[])
 		break;
 		case 'r':
 			remote_log_address = strdup(optarg);
+		break;
+		case 'T':
+			packet_timeout = atoi(optarg);
 		break;
 #if HAVE_SRP_SUPPORT
 		case 'F': {
@@ -868,6 +899,15 @@ next:
 		}
 	}
 #endif
+
+	if (packet_timeout > 0) {
+			timespec_t ts;
+			clock_gettime(CLOCK_MONOTONIC, &ts);
+			last_received = (ts.tv_sec *1000) + ts.tv_nsec /1000000;
+			last_received += 2000;//2 second bootup grace period.
+			pthread_t id;
+			pthread_create(&id, NULL, timeout_watchdog, &packet_timeout);
+	}
 
 	if (rist_start(ctx)) {
 		rist_log(&logging_settings, RIST_LOG_ERROR, "Could not start rist receiver\n");

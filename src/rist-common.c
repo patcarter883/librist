@@ -1392,7 +1392,7 @@ void rist_fsm_init_comm(struct rist_peer *peer)
 	if (!peer->event_recv) {
 		struct evsocket_ctx *evctx = get_cctx(peer)->evctx;
 		peer->event_recv = evsocket_addevent(evctx, peer->sd, EVSOCKET_EV_READ,
-				rist_peer_recv_wrap, rist_peer_sockerr, peer);
+				rist_peer_recv, rist_peer_sockerr, peer);
 	}
 
 	/* Enable RTCP timer and jump start it */

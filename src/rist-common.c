@@ -2310,7 +2310,7 @@ static void rist_peer_recv_wrap(struct evsocket_ctx *evctx, int fd, short revent
 	rist_peer_recv(evctx, fd, revents, arg, &again);
 	do {
 		rist_peer_recv(evctx, fd, revents, arg, &again);
-	} while(again)
+	} while(again);
 }
 
 static void rist_new_connection(struct rist_peer *peer, struct rist_peer *p, uint32_t flow_id) {

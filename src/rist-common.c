@@ -2302,13 +2302,15 @@ static void kill_peer(struct rist_peer *peer)
 }
 
 static void rist_peer_recv_wrap(struct evsocket_ctx *evctx, int fd, short revents, void *arg) {
+	#ifdef _WIN32
+	bool again = false;
+	#else
 	bool again = true;
+	#endif
 	rist_peer_recv(evctx, fd, revents, arg, &again);
-	// while (true) {
-	// 	rist_peer_recv(evctx, fd, revents, arg, &again);
-	// 	if (!again)
-	// 		return;
-	// }
+	do {
+		rist_peer_recv(evctx, fd, revents, arg, &again);
+	} while(again)
 }
 
 static void rist_new_connection(struct rist_peer *peer, struct rist_peer *p, uint32_t flow_id) {

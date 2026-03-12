@@ -493,12 +493,15 @@ void rist_prometheus_parse_stats(struct rist_prometheus_stats *ctx, const struct
 	pthread_mutex_unlock(&ctx->lock);
 }
 
+static const char PROMETHEUS_EOF[] = "# EOF\n";
+
 static int rist_prometheus_stats_format(struct rist_prometheus_stats *ctx) {
 	int req_size = rist_prometheus_format_client_flow_stats(ctx, NULL, 0);
 	if (req_size < 0) {
 		return 0;
 	}
 	req_size += rist_prometheus_format_sender_peer_stats(ctx, NULL, 0);
+	req_size += sizeof(PROMETHEUS_EOF) - 1;
 
 	if ((size_t)(req_size+1) > ctx->format_buf_len) {
 		ctx->format_buf = realloc(ctx->format_buf, ((req_size + 1023) & -1024));
@@ -507,6 +510,7 @@ static int rist_prometheus_stats_format(struct rist_prometheus_stats *ctx) {
 	int size = rist_prometheus_format_client_flow_stats(ctx, ctx->format_buf, (int)ctx->format_buf_len);
 
 	size += rist_prometheus_format_sender_peer_stats(ctx, &ctx->format_buf[size], (int)ctx->format_buf_len - size);
+	size += snprintf(&ctx->format_buf[size], ctx->format_buf_len - size, "%s", PROMETHEUS_EOF);
 	for (size_t i=0; i < ctx->client_cnt; i++) {
 		ctx->clients[i]->container_count = 0;
 		ctx->clients[i]->container_offset = 0;

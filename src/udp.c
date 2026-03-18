@@ -77,7 +77,12 @@ size_t rist_send_seq_rtcp(struct rist_peer *p, uint16_t seq_rtp, uint8_t payload
 		memcpy(_payload - hdr_len, hdr, hdr_len);
 	}
 
-	{
+	if (RIST_UNLIKELY(payload_type == RIST_PAYLOAD_TYPE_DATA_OOB)) {
+		/* OOB uses GRE FULL protocol with no reduced/RTP header prepended,
+		   so send the raw payload without the reduced-header offset */
+		len = payload_len;
+		data = _payload;
+	} else {
 		len =  hdr_len + payload_len - RIST_GRE_PROTOCOL_REDUCED_SIZE;
 		data = _payload - hdr_len + RIST_GRE_PROTOCOL_REDUCED_SIZE;
 	}

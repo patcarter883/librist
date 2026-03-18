@@ -3041,8 +3041,25 @@ static void rist_oob_dequeue(struct rist_common_ctx *ctx, int maxcount)
 		}
 
 		uint8_t *payload = oob_buffer->data;
-		rist_send_common_rtcp(oob_buffer->peer, RIST_PAYLOAD_TYPE_DATA_OOB, &payload[RIST_MAX_PAYLOAD_OFFSET],
-				oob_buffer->size, 0, 0, 0, 0, 0);
+		struct rist_peer *p = oob_buffer->peer;
+		if (p->listening) {
+			/* Listener peer: send OOB to all alive child peers */
+			struct rist_peer *child = p->child;
+			bool sent = false;
+			while (child) {
+				if (!child->dead) {
+					rist_send_common_rtcp(child, RIST_PAYLOAD_TYPE_DATA_OOB, &payload[RIST_MAX_PAYLOAD_OFFSET],
+							oob_buffer->size, 0, 0, 0, 0, 0);
+					sent = true;
+				}
+				child = child->sibling_next;
+			}
+			if (!sent)
+				rist_log_priv(ctx, RIST_LOG_WARN, "OOB: listener peer has no alive children, dropping\n");
+		} else {
+			rist_send_common_rtcp(p, RIST_PAYLOAD_TYPE_DATA_OOB, &payload[RIST_MAX_PAYLOAD_OFFSET],
+					oob_buffer->size, 0, 0, 0, 0, 0);
+		}
 		ctx->oob_queue_bytesize -= oob_buffer->size;
 		ctx->oob_queue_read_index++;
 	}

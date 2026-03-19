@@ -36,6 +36,28 @@ extern "C" {
 RIST_API int rist_jitter_max_set(struct rist_ctx *ctx, int t);
 
 /**
+ * @brief Set the recovery buffer RTT multiplier
+ *
+ * Controls how aggressively the auto-scaling buffer grows relative to
+ * the measured RTT. The recovery buffer is calculated as:
+ *   buffer = multiplier * smoothed_rtt + reorder_buffer
+ *
+ * Default is 7 (per RIST spec recommendation). Lower values (2-3) are
+ * suitable for low-latency LAN scenarios. Must be >= 1.
+ *
+ * Only effective on receiver contexts when auto-scaling is enabled
+ * (i.e., recovery_length_min != recovery_length_max).
+ *
+ * Can be called at any time, before or after rist_start(). Changes
+ * take effect on the next buffer recalculation cycle (~1 second).
+ *
+ * @param ctx RIST context
+ * @param multiplier RTT multiplier (>= 1, default 7)
+ * @return 0 on success, -1 on error
+ */
+RIST_API int rist_recovery_rtt_multiplier_set(struct rist_ctx *ctx, int multiplier);
+
+/**
  * @brief Starts the RIST sender or receiver
  *
  * After all the peers have been added, this function triggers

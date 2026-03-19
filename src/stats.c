@@ -323,6 +323,7 @@ void rist_receiver_flow_statistics(struct rist_receiver *ctx, struct rist_flow *
 	stats_container->stats.receiver_flow.cur_inter_packet_spacing = flow->stats_instant.cur_ips;
 	stats_container->stats.receiver_flow.max_inter_packet_spacing = flow->stats_instant.max_ips;
 	stats_container->stats.receiver_flow.rtt = flow->peer_lst_len ? (flow_rtt / flow->peer_lst_len)/RIST_CLOCK : 0;
+	stats_container->stats.receiver_flow.avg_buffer_time = avg_buffer_duration;
 
 	/* CALLBACK CALL */
 	if (ctx->common.stats_callback != NULL)

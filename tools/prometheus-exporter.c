@@ -74,7 +74,7 @@ struct rist_prometheus_client_flow_stats {
 		double rist_client_flow_cur_iat_seconds;
 		double rist_client_flow_max_iat_seconds;
 		double rist_client_flow_rtt_seconds;
-		double rist_client_flow_quality;
+		double rist_client_flow_quality_ratio;
 	} container[16];
 
 	int container_count;
@@ -107,7 +107,7 @@ struct rist_prometheus_sender_peer_stats {
 		double rist_sender_peer_received_packets;
 		double rist_sender_peer_retransmitted_packets;
 		double rist_sender_peer_rtt_seconds;
-		double rist_sender_peer_quality;
+		double rist_sender_peer_quality_ratio;
 	} container[16];
 	int container_count;
 	int container_offset;
@@ -232,7 +232,7 @@ static int rist_prometheus_format_client_flow_stats(struct rist_prometheus_stats
 	PROMETHEUS_GAUGE_PRINT_CLIENT(rist_client_flow_cur_iat_seconds, "Current inter arrival time in seconds", "seconds")
 	PROMETHEUS_GAUGE_PRINT_CLIENT(rist_client_flow_max_iat_seconds, "Maximum inter arrival time in seconds", "seconds")
 	PROMETHEUS_GAUGE_PRINT_CLIENT(rist_client_flow_rtt_seconds, "Current RTT in seconds", "seconds");
-	PROMETHEUS_GAUGE_PRINT_CLIENT(rist_client_flow_quality, "Current connection quality percentage", "ratio");
+	PROMETHEUS_GAUGE_PRINT_CLIENT(rist_client_flow_quality_ratio, "Current connection quality ratio", "ratio");
 	return offset;
 }
 
@@ -248,7 +248,7 @@ static int rist_prometheus_format_sender_peer_stats(struct rist_prometheus_stats
 	PROMETHEUS_GAUGE_PRINT_SENDER_PEER(rist_sender_peer_retransmitted_packets, "Total number of packets retransmitted", "packets")
 	PROMETHEUS_GAUGE_PRINT_SENDER_PEER(rist_sender_peer_received_packets, "Total number of packets received (rtcp)", "packets")
 	PROMETHEUS_GAUGE_PRINT_SENDER_PEER(rist_sender_peer_rtt_seconds, "Current RTT in seconds", "seconds");
-	PROMETHEUS_GAUGE_PRINT_SENDER_PEER(rist_sender_peer_quality, "Current connection quality percentage", "ratio");
+	PROMETHEUS_GAUGE_PRINT_SENDER_PEER(rist_sender_peer_quality_ratio, "Current connection quality ratio", "ratio");
 	return offset;
 }
 
@@ -324,7 +324,7 @@ void rist_prometheus_handle_client_stats(struct rist_prometheus_stats *ctx, cons
 	s->container[s->container_offset].rist_client_flow_cur_iat_seconds = ((double)1 / (double)1000000) * stats->cur_inter_packet_spacing;
 	s->container[s->container_offset].rist_client_flow_max_iat_seconds = ((double)1 / (double)1000000) * stats->max_inter_packet_spacing;
 	s->container[s->container_offset].rist_client_flow_rtt_seconds = ((double)1 / (double)1000) * stats->rtt;
-	s->container[s->container_offset].rist_client_flow_quality = stats->quality;
+	s->container[s->container_offset].rist_client_flow_quality_ratio = (double)stats->quality / 100.0;
 	s->container[s->container_offset].updated = now;
 	s->last_updated = now;
 	if (!ctx->single_stat_point) {
@@ -403,7 +403,7 @@ void rist_prometheus_handle_sender_peer_stats(struct rist_prometheus_stats *ctx,
 	s->container[s->container_offset].rist_sender_peer_retry_bandwidth_bps = stats->retry_bandwidth;
 	s->container[s->container_offset].rist_sender_peer_ts_nulls_bandwidth_bps = ts_nulls_bandwidth;
 	s->container[s->container_offset].rist_sender_peer_rtt_seconds= ((double)1 / (double)1000) * stats->rtt;
-	s->container[s->container_offset].rist_sender_peer_quality = stats->quality;
+	s->container[s->container_offset].rist_sender_peer_quality_ratio = (double)stats->quality / 100.0;
 	s->container[s->container_offset].updated = now;
 	s->last_updated = now;
 	if (!ctx->single_stat_point) {
@@ -493,12 +493,15 @@ void rist_prometheus_parse_stats(struct rist_prometheus_stats *ctx, const struct
 	pthread_mutex_unlock(&ctx->lock);
 }
 
+static const char PROMETHEUS_EOF[] = "# EOF\n";
+
 static int rist_prometheus_stats_format(struct rist_prometheus_stats *ctx) {
 	int req_size = rist_prometheus_format_client_flow_stats(ctx, NULL, 0);
 	if (req_size < 0) {
 		return 0;
 	}
 	req_size += rist_prometheus_format_sender_peer_stats(ctx, NULL, 0);
+	req_size += sizeof(PROMETHEUS_EOF) - 1;
 
 	if ((size_t)(req_size+1) > ctx->format_buf_len) {
 		ctx->format_buf = realloc(ctx->format_buf, ((req_size + 1023) & -1024));
@@ -507,6 +510,7 @@ static int rist_prometheus_stats_format(struct rist_prometheus_stats *ctx) {
 	int size = rist_prometheus_format_client_flow_stats(ctx, ctx->format_buf, (int)ctx->format_buf_len);
 
 	size += rist_prometheus_format_sender_peer_stats(ctx, &ctx->format_buf[size], (int)ctx->format_buf_len - size);
+	size += snprintf(&ctx->format_buf[size], ctx->format_buf_len - size, "%s", PROMETHEUS_EOF);
 	for (size_t i=0; i < ctx->client_cnt; i++) {
 		ctx->clients[i]->container_count = 0;
 		ctx->clients[i]->container_offset = 0;

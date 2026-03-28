@@ -55,6 +55,7 @@ int rist_receiver_create(struct rist_ctx **_ctx, enum rist_profile profile,
 	if (init_common_ctx(&ctx->common, profile))
 		goto fail;
 
+	ctx->common.recovery_rtt_multiplier = 7;
 	ctx->common.logging_settings = logging_settings;
 	ctx->common.stats_report_time = (uint64_t)1000 * (uint64_t)RIST_CLOCK;
 	ctx->fifo_queue_size = RIST_DATAOUT_QUEUE_BUFFERS;
@@ -365,6 +366,7 @@ int rist_sender_create(struct rist_ctx **_ctx, enum rist_profile profile,
 		return -1;
 	}
 
+	ctx->common.recovery_rtt_multiplier = 7;
 	ctx->common.logging_settings = logging_settings;
 	ctx->common.stats_report_time = (uint64_t)1000 * (uint64_t)RIST_CLOCK;
 	//ctx->common.seq = 9159579;
@@ -668,6 +670,14 @@ int rist_jitter_max_set(struct rist_ctx *ctx, int t)
 	if (!cctx)
 		return -1;
 	return rist_max_jitter_set(cctx, t);
+}
+
+int rist_recovery_rtt_multiplier_set(struct rist_ctx *ctx, int multiplier)
+{
+	struct rist_common_ctx *cctx = rist_struct_get_common(ctx);
+	if (!cctx)
+		return -1;
+	return rist_recovery_rtt_multiplier_set_internal(cctx, multiplier);
 }
 
 int rist_auth_handler_set(struct rist_ctx *ctx,

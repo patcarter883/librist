@@ -299,6 +299,9 @@ struct rist_common_ctx {
 	/* Timers */
 	int rist_max_jitter;
 
+	/* Recovery buffer RTT multiplier (default 7, per RIST spec) */
+	int recovery_rtt_multiplier;
+
 	/* Peer list sync - RW locks */
 	struct rist_peer *PEERS;
 	pthread_mutex_t peerlist_lock;
@@ -664,6 +667,7 @@ RIST_PRIV void free_data_block(struct rist_data_block **const block);
 RIST_PRIV PTHREAD_START_FUNC(sender_pthread_protocol, arg);
 RIST_PRIV PTHREAD_START_FUNC(receiver_pthread_protocol, arg);
 RIST_PRIV int rist_max_jitter_set(struct rist_common_ctx *ctx, int t);
+RIST_PRIV int rist_recovery_rtt_multiplier_set_internal(struct rist_common_ctx *ctx, int multiplier);
 RIST_PRIV int parse_url_options(const char *url, struct rist_peer_config *output_peer_config);
 RIST_PRIV int parse_url_udp_options(const char *url, struct rist_udp_config *output_udp_config);
 RIST_PRIV struct rist_peer *rist_receiver_peer_insert_local(struct rist_receiver *ctx,

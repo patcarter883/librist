@@ -92,6 +92,8 @@ struct rist_stats_receiver_flow
 	uint32_t rtt;
 	/* peers */
 	struct rist_stats_receiver_peer *peers;
+	/* average buffer duration in microseconds (dynamic RIST receiver buffer fill level) */
+	uint64_t avg_buffer_time;
 };
 
 enum rist_stats_type
@@ -100,7 +102,7 @@ enum rist_stats_type
 	RIST_STATS_RECEIVER_FLOW
 };
 
-#define RIST_STATS_VERSION (0)
+#define RIST_STATS_VERSION (1)
 #define RIST_SENDER_STATS_VERSION (0)
 
 struct rist_stats

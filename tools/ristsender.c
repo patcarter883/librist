@@ -28,6 +28,7 @@
 #include <stdatomic.h>
 #include "oob_shared.h"
 #include "prometheus-exporter.h"
+#include "endian-shim.h"
 #if defined(__unix) || defined(__APPLE__)
 #include <sys/ioctl.h>
 #endif

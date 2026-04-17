@@ -30,6 +30,7 @@
 #include "oob_shared.h"
 #include "prometheus-exporter.h"
 #include "rist-private.h"
+#include "endian-shim.h"
 #ifndef _WIN32
 #include <sys/ioctl.h>
 #endif

@@ -787,7 +787,6 @@ static int rist_process_nack(struct rist_flow *f, struct rist_missing_buffer *b)
 				rtt = peer->config.recovery_rtt_max;
 			}
 			if (b->nack_count == 0) {
-				f->missing_counter++;
 				pthread_mutex_lock(&(get_cctx(peer)->stats_lock));
 				f->stats_instant.missing++;
 				pthread_mutex_unlock(&(get_cctx(peer)->stats_lock));
@@ -1255,8 +1254,7 @@ nack_loop_continue:
 			if (!next)
 				f->missing_tail = previous;
 			*prev = next;
-			if (mb->nack_count != 0)
-				f->missing_counter--;
+			f->missing_counter--;
 			free(mb);
 			mb = next;
 		} else {

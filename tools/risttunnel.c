@@ -31,6 +31,9 @@
 #if defined(__unix) || defined(__APPLE__)
 #include <unistd.h>
 #endif
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 #define RISTTUNNEL_VERSION "2"
 #define DEFAULT_MTU 1400

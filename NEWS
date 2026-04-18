@@ -61,6 +61,15 @@ Bug Fixes:
     for be16toh in ristsender.c and ristreceiver.c
   - Fix tools build: always compile tunnel_interface/tun_mode into
     rist_tools_config_object (consumers reference them unconditionally)
+  - Fix missing_counter bookkeeping: track queue length instead of
+    NACK-sent count. Previously the counter stayed at 0 on paths that
+    never emit NACKs (e.g. simple-profile multicast), causing the
+    missing_queue JSON stat to under-report and the congestion guard in
+    receiver_mark_missing to never trip.
+  - Fix build-only-platform-matching TUN source file; previously the
+    non-matching src/tun_*.c were compiled into an empty translation
+    unit and tripped -Werror=pedantic on Ubuntu/MinGW.
+  - Fix risttunnel build on MinGW: include <windows.h> for Sleep().
 
 Improvements:
   - Refactored sender queue management for better memory efficiency

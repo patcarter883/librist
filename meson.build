@@ -80,6 +80,7 @@ have_clock_gettime = false
 threads = []
 test_args = []
 if host_machine.system() == 'windows'
+	platform_files += 'src/tun_win.c'
 	deps += [
 		cc.find_library('ws2_32'),
 		cc.find_library('iphlpapi')
@@ -117,6 +118,7 @@ windows_version_test = '''
 	librist_soversion = ''
 else
 	if host_machine.system() == 'linux' or host_machine.system() == 'android'
+		platform_files += 'src/tun_linux.c'
 		test_args += '-D_GNU_SOURCE'
 		add_project_arguments('-D_GNU_SOURCE', language: 'c')
 		if cc.check_header('linux/if_alg.h')
@@ -137,6 +139,7 @@ void test(void) {
 			inc += include_directories('compat/android')
 		endif
 	elif host_machine.system() == 'darwin'
+		platform_files += 'src/tun_darwin.c'
 		test_args += '-D_DARWIN_C_SOURCE'
 		add_project_arguments('-D_DARWIN_C_SOURCE', language: 'c')
 	elif host_machine.system() == 'gnu'
@@ -320,9 +323,6 @@ librist = library('librist',
 	'src/stats.c',
 	'src/udpsocket.c',
 	'src/libevsocket.c',
-	'src/tun_darwin.c',
-	'src/tun_linux.c',
-	'src/tun_win.c',
 	'contrib/stdio-shim.c',
 	'contrib/time-shim.c',
 	'contrib/pthread-shim.c',

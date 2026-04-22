@@ -15,9 +15,13 @@
 #include "librist/librist_srp.h"
 #include "srp_shared.h"
 #endif
+#if HAVE_PROMETHEUS_SUPPORT
+#include "prometheus-exporter.h"
+#endif
 #include "vcs_version.h"
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 #include "getopt-shim.h"
 #include <assert.h>
 #include <signal.h>
@@ -26,7 +30,7 @@
 #endif
 #include "oob_shared.h"
 
-#define RIST2RIST_VERSION "30"
+#define RIST2RIST_VERSION "31"
 
 struct rist_sender_args {
 	char* cname;
@@ -37,6 +41,7 @@ struct rist_sender_args {
 	int encryption_type;
 	uint32_t flow_id;
 	int statsinterval;
+	int npd_enabled;
 };
 
 struct rist_cb_arg {
@@ -49,6 +54,15 @@ struct rist_cb_arg {
 static int keep_running = 1;
 static struct rist_logging_settings logging_settings = LOGGING_SETTINGS_INITIALIZER;
 
+#if HAVE_PROMETHEUS_SUPPORT
+static struct rist_prometheus_stats *prom_stats_ctx = NULL;
+static bool prometheus_httpd = false;
+static bool enable_prometheus = false;
+static char *prometheus_tags = NULL;
+static uint16_t prometheus_port = 9100;
+static char *prometheus_ip = NULL;
+#endif
+
 static struct option long_options[] = {
 { "inurl",           required_argument, NULL, 'i' },
 { "outurl",          required_argument, NULL, 'o' },
@@ -59,16 +73,26 @@ static struct option long_options[] = {
 { "verbose-level",   required_argument, NULL, 'v' },
 { "remote-logging",  required_argument, NULL, 'r' },
 { "profile",         required_argument, NULL, 'p' },
+{ "npd",             no_argument,       NULL, 'n' },
 #if HAVE_SRP_SUPPORT
 { "srpfile",         required_argument, NULL, 'F' },
+#endif
+#if HAVE_PROMETHEUS_SUPPORT
+{ "enable-metrics",  no_argument,       NULL, 'M' },
+{ "metrics-tags",    required_argument, NULL, 1 },
+#if HAVE_LIBMICROHTTPD
+{ "metrics-http",    no_argument,       NULL, 4 },
+{ "metrics-port",    required_argument, NULL, 2 },
+{ "metrics-ip",      required_argument, NULL, 3 },
+#endif
 #endif
 { "help",            no_argument,       NULL, 'h' },
 { 0, 0, 0, 0 },
 };
 
-const char help_str[] = "Usage: %s [OPTIONS] \nWhere OPTIONS are:\n"
-"       -i | --inputurl ADDRESS:PORT            * | Input IP address and port                                |\n"
-"       -o | --outputurl ADDRESS:PORT           * | Output IP address and port                               |\n"
+const char help_str[] = "Where OPTIONS are:\n"
+"       -i | --inurl  ADDRESS:PORT[,ADDR:PORT]* * | Input URL (comma-separated list for source bonding)      |\n"
+"       -o | --outurl ADDRESS:PORT[,ADDR:PORT]* * | Output URL (comma-separated list for destination fanout) |\n"
 "       -s | --secret PWD                         | Pre-shared encryption secret                             |\n"
 "       -e | --encryption-type TYPE               | Encryption type (0 = none, 1 = AES-128, 2 = AES-256)     |\n"
 "       -S | --statsinterval value (ms)           | Interval at which stats get printed, 0 to disable        |\n"
@@ -76,15 +100,25 @@ const char help_str[] = "Usage: %s [OPTIONS] \nWhere OPTIONS are:\n"
 "       -v | --verbose-level value                | To disable logging: -1, log levels match syslog levels   |\n"
 "       -r | --remote-logging IP:PORT             | Send logs and stats to this IP:PORT using udp messages   |\n"
 "       -p | --profile number                     | Rist receive profile (0 = simple, 1 = main, 2 = advanced)|\n"
+"       -n | --npd                                | Enable Null Packet Deletion on output                    |\n"
 #if HAVE_SRP_SUPPORT
 "       -F | --srpfile filepath                   | When in listening mode, use this file to hold the list   |\n"
 "                                                 | of usernames and passwords to validate against. Use the  |\n"
 "                                                 | ristsrppasswd tool to create the line entries.           |\n"
 #endif
+#if HAVE_PROMETHEUS_SUPPORT
+"       -M | --enable-metrics                     | Enable OpenMetrics/Prometheus compatible metrics         |\n"
+"          | --metrics-tags                       | Additional tags to add to the metrics                    |\n"
+#if HAVE_LIBMICROHTTPD
+"          | --metrics-http                       | Start HTTP server to expose metrics                      |\n"
+"          | --metrics-port                       | Port for metrics HTTP server (default: 9100)             |\n"
+"          | --metrics-ip                         | IP for metrics HTTP server (default: 0.0.0.0)            |\n"
+#endif
+#endif
 "       -h | --help                               | Show this help                                           |\n"
 "       -u | --help-url                           | Show all the possible url options                        |\n"
 "   * == mandatory value \n"
-"Default values: %s \n"
+"Default values:\n"
 "       --profile 0               \\\n"
 "       --statsinterval 1000      \\\n"
 "       --verbose-level 6         \n";
@@ -95,7 +129,11 @@ const char help_str[] = "Usage: %s [OPTIONS] \nWhere OPTIONS are:\n"
 
 static void usage(char *cmd)
 {
-	rist_log(&logging_settings, RIST_LOG_INFO, "%s\n%s version %s libRIST library: %s API version: %s\n", cmd, help_str, RIST2RIST_VERSION, librist_version(), librist_api_version());
+	rist_log(&logging_settings, RIST_LOG_INFO,
+		"rist2rist version %s libRIST library: %s API version: %s\n"
+		"Usage: %s [OPTIONS]\n%s",
+		RIST2RIST_VERSION, librist_version(), librist_api_version(),
+		cmd, help_str);
 	exit(1);
 }
 
@@ -137,8 +175,14 @@ static int cb_recv_oob(void *arg, const struct rist_oob_block *oob_block)
 }
 
 static int cb_stats(void *arg, const struct rist_stats *stats_container) {
-	(void)arg;
 	rist_log(&logging_settings, RIST_LOG_INFO, "%s\n\n", stats_container->stats_json);
+#if HAVE_PROMETHEUS_SUPPORT
+	if (prom_stats_ctx) {
+		rist_prometheus_parse_stats(prom_stats_ctx, stats_container, (uintptr_t)arg);
+	}
+#else
+	(void)arg;
+#endif
 	rist_stats_free(stats_container);
 	return 0;
 }
@@ -165,73 +209,91 @@ static struct rist_ctx* setup_rist_sender(struct rist_sender_args *setup) {
 	}
 
 	if (setup->statsinterval) {
-		rist_stats_callback_set(ctx, setup->statsinterval, cb_stats, NULL);
+		/* Pass ctx pointer as user data so the Prometheus id is unique per
+		 * context (receiver vs. sender) when both are active in the same
+		 * process. */
+		rist_stats_callback_set(ctx, setup->statsinterval, cb_stats, ctx);
 	}
 
-	// Applications defaults and/or command line options
-	int keysize =  setup->encryption_type * 128;
-	struct rist_peer_config app_peer_config = {
-		.version = RIST_PEER_CONFIG_VERSION,
-		.virt_dst_port = 1968,
-		.recovery_mode = RIST_DEFAULT_RECOVERY_MODE,
-		.recovery_maxbitrate = RIST_DEFAULT_RECOVERY_MAXBITRATE,
-		.recovery_maxbitrate_return = RIST_DEFAULT_RECOVERY_MAXBITRATE_RETURN,
-		.recovery_length_min = RIST_DEFAULT_RECOVERY_LENGTH_MIN,
-		.recovery_length_max = RIST_DEFAULT_RECOVERY_LENGTH_MAX,
-		.recovery_reorder_buffer = RIST_DEFAULT_RECOVERY_REORDER_BUFFER,
-		.recovery_rtt_min = RIST_DEFAULT_RECOVERY_RTT_MIN,
-		.recovery_rtt_max = RIST_DEFAULT_RECOVERY_RTT_MAX,
-		.weight = 5,
-		.congestion_control_mode = RIST_DEFAULT_CONGESTION_CONTROL_MODE,
-		.min_retries = RIST_DEFAULT_MIN_RETRIES,
-		.max_retries = RIST_DEFAULT_MAX_RETRIES,
-		.key_size = 0,
-	};
-
-	app_peer_config.virt_dst_port = setup->dst_port;
-	app_peer_config.key_size = keysize;
-
-	if (setup->shared_secret != NULL) {
-		strncpy(app_peer_config.secret, setup->shared_secret, RIST_MAX_STRING_SHORT -1);
+	if (setup->npd_enabled) {
+		if (rist_sender_npd_enable(ctx) != 0) {
+			rist_log(&logging_settings, RIST_LOG_WARN, "Could not enable null-packet-deletion on sender\n");
+		} else {
+			rist_log(&logging_settings, RIST_LOG_INFO, "Null-packet-deletion enabled on sender\n");
+		}
 	}
 
-	if (setup->cname != NULL) {
-		strncpy(app_peer_config.cname, setup->cname, RIST_MAX_STRING_SHORT -1);
-	}
+	int keysize = setup->encryption_type * 128;
 
-	// URL overrides (also cleans up the URL)
-	struct rist_peer_config *peer_config = &app_peer_config;
-	if (rist_parse_address2(setup->outputurl, &peer_config))
-	{
-		rist_log(&logging_settings, RIST_LOG_ERROR, "Could not parse peer options for sender\n");
-		exit(1);
-	}
+	/* Tokenize the output URL list on ',' and add one sender peer per token.
+	 * Matches the convention used by ristsender/ristreceiver. */
+	char *saveptr = NULL;
+	char *outtoken = strtok_r(setup->outputurl, ",", &saveptr);
+	int peer_count = 0;
+	while (outtoken) {
+		/* Applications defaults reset per peer (URL parsing mutates config). */
+		struct rist_peer_config app_peer_config = {
+			.version = RIST_PEER_CONFIG_VERSION,
+			.virt_dst_port = setup->dst_port,
+			.recovery_mode = RIST_DEFAULT_RECOVERY_MODE,
+			.recovery_maxbitrate = RIST_DEFAULT_RECOVERY_MAXBITRATE,
+			.recovery_maxbitrate_return = RIST_DEFAULT_RECOVERY_MAXBITRATE_RETURN,
+			.recovery_length_min = RIST_DEFAULT_RECOVERY_LENGTH_MIN,
+			.recovery_length_max = RIST_DEFAULT_RECOVERY_LENGTH_MAX,
+			.recovery_reorder_buffer = RIST_DEFAULT_RECOVERY_REORDER_BUFFER,
+			.recovery_rtt_min = RIST_DEFAULT_RECOVERY_RTT_MIN,
+			.recovery_rtt_max = RIST_DEFAULT_RECOVERY_RTT_MAX,
+			.weight = 5,
+			.congestion_control_mode = RIST_DEFAULT_CONGESTION_CONTROL_MODE,
+			.min_retries = RIST_DEFAULT_MIN_RETRIES,
+			.max_retries = RIST_DEFAULT_MAX_RETRIES,
+			.key_size = keysize,
+		};
 
-	struct rist_peer *peer;
-	if (rist_peer_create(ctx, &peer, peer_config) == -1) {
-		rist_log(&logging_settings, RIST_LOG_ERROR, "Could not add peer connector to sender\n");
-		exit(1);
-	}
+		if (setup->shared_secret != NULL) {
+			strncpy(app_peer_config.secret, setup->shared_secret, RIST_MAX_STRING_SHORT -1);
+		}
+
+		if (setup->cname != NULL) {
+			strncpy(app_peer_config.cname, setup->cname, RIST_MAX_STRING_SHORT -1);
+		}
+
+		/* URL overrides (also cleans up the URL) */
+		struct rist_peer_config *peer_config = &app_peer_config;
+		if (rist_parse_address2(outtoken, &peer_config)) {
+			rist_log(&logging_settings, RIST_LOG_ERROR, "Could not parse peer options for sender: %s\n", outtoken);
+			exit(1);
+		}
+
+		struct rist_peer *peer;
+		if (rist_peer_create(ctx, &peer, peer_config) == -1) {
+			rist_log(&logging_settings, RIST_LOG_ERROR, "Could not add peer connector to sender: %s\n", outtoken);
+			exit(1);
+		}
 
 #if HAVE_SRP_SUPPORT
-	int srp_error = 0;
-	if (strlen(peer_config->srp_username) > 0 && strlen(peer_config->srp_password) > 0)
-	{
-		srp_error = rist_enable_eap_srp_2(peer, peer_config->srp_username, peer_config->srp_password, NULL, NULL);
-		if (srp_error)
-			rist_log(&logging_settings, RIST_LOG_WARN, "Error %d trying to enable SRP for peer\n", srp_error);
-	}
-	if (srpfile)
-	{
-		srp_error = rist_enable_eap_srp_2(peer, NULL, NULL, user_verifier_lookup, srpfile);
-		if (srp_error)
-			rist_log(&logging_settings, RIST_LOG_WARN, "Error %d trying to enable SRP global authenticator, file %s\n", srp_error, srpfile);
-	}
+		int srp_error = 0;
+		if (strlen(peer_config->srp_username) > 0 && strlen(peer_config->srp_password) > 0)
+		{
+			srp_error = rist_enable_eap_srp_2(peer, peer_config->srp_username, peer_config->srp_password, NULL, NULL);
+			if (srp_error)
+				rist_log(&logging_settings, RIST_LOG_WARN, "Error %d trying to enable SRP for peer\n", srp_error);
+		}
+		if (srpfile)
+		{
+			srp_error = rist_enable_eap_srp_2(peer, NULL, NULL, user_verifier_lookup, srpfile);
+			if (srp_error)
+				rist_log(&logging_settings, RIST_LOG_WARN, "Error %d trying to enable SRP global authenticator, file %s\n", srp_error, srpfile);
+		}
 #endif
+		peer_count++;
+		outtoken = strtok_r(NULL, ",", &saveptr);
+	}
 
-	/* Setting rist timeouts (in ms)*/
-	//rist_sender_set_retry_timeout(ctx, 10000);
-	//rist_sender_keepalive_timeout_set(ctx, 5000);
+	if (peer_count == 0) {
+		rist_log(&logging_settings, RIST_LOG_ERROR, "No valid output peer URLs provided\n");
+		exit(1);
+	}
 
 	if (rist_start(ctx) == -1) {
 		rist_log(&logging_settings, RIST_LOG_ERROR, "Could not start rist sender\n");
@@ -276,6 +338,7 @@ int main (int argc, char **argv) {
 	client_args.encryption_type = 0;
 	client_args.shared_secret = NULL;
 	client_args.flow_id = 0;
+	client_args.npd_enabled = 0;
 	int statsinterval = 1000;
 	enum rist_log_level loglevel = RIST_LOG_INFO;
 	char *remote_log_address = NULL;
@@ -304,7 +367,16 @@ int main (int argc, char **argv) {
 
 	int option_index;
 	int c;
-	while ((c = getopt_long(argc, argv, "r:i:o:s:e:N:v:S:p:h:u", long_options, &option_index)) != -1) {
+	/* Short-option string. Note: 'n' is flag-only (no argument), while 'M'
+	 * (enable-metrics) is also flag-only. Long-only options use numeric
+	 * return codes (see long_options). */
+	const char *short_opts =
+#if HAVE_SRP_SUPPORT
+		"r:i:o:s:e:N:v:S:p:F:nMhu";
+#else
+		"r:i:o:s:e:N:v:S:p:nMhu";
+#endif
+	while ((c = getopt_long(argc, argv, short_opts, long_options, &option_index)) != -1) {
 		switch (c) {
 		case 'i':
 			if (inputurl != NULL)
@@ -332,6 +404,9 @@ int main (int argc, char **argv) {
 		case 'p':
 			profile = atoi(optarg);
 			break;
+		case 'n':
+			client_args.npd_enabled = 1;
+			break;
 		case 'v':
 			loglevel = (enum rist_log_level) atoi(optarg);
 			break;
@@ -350,6 +425,29 @@ int main (int argc, char **argv) {
 			srpfile = strdup(optarg);
 		}
 		break;
+#endif
+#if HAVE_PROMETHEUS_SUPPORT
+		case 'M':
+			enable_prometheus = true;
+			break;
+		case 1:
+			if (prometheus_tags)
+				free(prometheus_tags);
+			prometheus_tags = strdup(optarg);
+			break;
+#if HAVE_LIBMICROHTTPD
+		case 2:
+			prometheus_port = (uint16_t)atoi(optarg);
+			break;
+		case 3:
+			if (prometheus_ip)
+				free(prometheus_ip);
+			prometheus_ip = strdup(optarg);
+			break;
+		case 4:
+			prometheus_httpd = true;
+			break;
+#endif
 #endif
 		case 'S':
 			statsinterval = atoi(optarg);
@@ -383,6 +481,28 @@ usage:
 		exitcode = 1;
 		goto out;;
 	}
+
+#if HAVE_PROMETHEUS_SUPPORT
+	if (enable_prometheus) {
+		struct prometheus_httpd_options httpd_opt = {
+			.enabled = prometheus_httpd,
+			.port = prometheus_port,
+			.bind_sockaddr = false,
+			.ip = prometheus_ip,
+		};
+		prom_stats_ctx = rist_setup_prometheus_stats(log_ptr,
+			prometheus_tags,
+			/* multiple_metric_datapoints */ false,
+			/* skipcreated */ false,
+			&httpd_opt,
+			/* unix_socket */ NULL);
+		if (prom_stats_ctx == NULL) {
+			rist_log(&logging_settings, RIST_LOG_ERROR, "Failed to initialise Prometheus metrics exporter\n");
+			exitcode = 1;
+			goto out;
+		}
+	}
+#endif
 
 	struct rist_ctx *receiver_ctx;
 
@@ -421,21 +541,35 @@ usage:
 	}
 
 	if (statsinterval) {
-		rist_stats_callback_set(receiver_ctx, statsinterval, cb_stats, NULL);
+		rist_stats_callback_set(receiver_ctx, statsinterval, cb_stats, receiver_ctx);
 	}
 
-	// URL overrides (also cleans up the URL)
-	struct rist_peer_config *peer_config = &app_peer_config;
-	if (rist_parse_address2(inputurl, &peer_config))
-	{
-		rist_log(&logging_settings, RIST_LOG_ERROR, "Could not parse peer options for receiver \n");
-		exitcode = 1;
-		goto out;
+	/* Tokenize the input URL list on ',' and add one receiver peer per token.
+	 * Matches ristreceiver's convention for multi-peer/bonded inputs. */
+	char *rx_saveptr = NULL;
+	char *intoken = strtok_r(inputurl, ",", &rx_saveptr);
+	int rx_peer_count = 0;
+	while (intoken) {
+		struct rist_peer_config per_peer_config = app_peer_config;
+		struct rist_peer_config *peer_config = &per_peer_config;
+		if (rist_parse_address2(intoken, &peer_config)) {
+			rist_log(&logging_settings, RIST_LOG_ERROR, "Could not parse peer options for receiver: %s\n", intoken);
+			exitcode = 1;
+			goto out;
+		}
+
+		struct rist_peer *peer;
+		if (rist_peer_create(receiver_ctx, &peer, peer_config) == -1) {
+			rist_log(&logging_settings, RIST_LOG_ERROR, "Could not add peer connector to receiver: %s\n", intoken);
+			exitcode = 1;
+			goto out;
+		}
+		rx_peer_count++;
+		intoken = strtok_r(NULL, ",", &rx_saveptr);
 	}
 
-	struct rist_peer *peer;
-	if (rist_peer_create(receiver_ctx, &peer, peer_config) == -1) {
-		rist_log(&logging_settings, RIST_LOG_ERROR, "Could not add peer connector to receiver \n");
+	if (rx_peer_count == 0) {
+		rist_log(&logging_settings, RIST_LOG_ERROR, "No valid input peer URLs provided\n");
 		exitcode = 1;
 		goto out;
 	}
@@ -479,6 +613,16 @@ usage:
 	rist_destroy(receiver_ctx);
 	rist_destroy(cb_arg.sender_ctx);
 out:
+#if HAVE_PROMETHEUS_SUPPORT
+	if (prom_stats_ctx) {
+		rist_prometheus_stats_destroy(prom_stats_ctx);
+		prom_stats_ctx = NULL;
+	}
+	if (prometheus_tags)
+		free(prometheus_tags);
+	if (prometheus_ip)
+		free(prometheus_ip);
+#endif
 	rist_logging_unset_global();
 	if (client_args.shared_secret)
 		free(client_args.shared_secret);
@@ -490,8 +634,6 @@ out:
 		free(outputurl);
 	if (remote_log_address)
 		free(remote_log_address);
-
-
 
 	return exitcode;
 }

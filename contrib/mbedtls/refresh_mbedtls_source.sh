@@ -1,4 +1,4 @@
 #!/bin/sh
 
-cp -a ../../subprojects/mbedtls-2.26.0/include/* include/
-cp -a ../../subprojects/mbedtls-2.26.0/library/* library/
+cp -a ../../subprojects/mbedtls-2.28.10/include/* include/
+cp -a ../../subprojects/mbedtls-2.28.10/library/* library/

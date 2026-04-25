@@ -5,6 +5,94 @@ A library implementing the Video Services Forum (VSF) Technical
 Recommendations TR-06-1 (Simple Profile) and TR-06-2 (Main Profile).
 
 
+Changes for 0.2.14 (2026-04-25):
+--------------------------------
+
+ABI/API:
+  - ABI version 10:2:6 (soversion 4, binary-compatible with 0.2.13)
+  - API version 4.7.0 (unchanged)
+
+  Maintenance release. No public API or ABI signature changes.
+  Existing 0.2.13 installations remain binary-compatible; downstream
+  consumers do not need to recompile and relink.
+
+Bug Fixes:
+
+  - fix(sender): serialize retry-queue dequeue under peerlist_lock
+    to avoid a use-after-free. The retry-queue cleanup path could
+    race with peer teardown and dereference a peer that had already
+    been freed on a sibling thread, occasionally producing a sender
+    crash under sustained NACK pressure with multi-peer
+    configurations. The dequeue is now performed with the peerlist
+    lock held for the full critical section.
+  - fix(macos): honor the -1/errno contract in the time-shim and
+    zero-initialize the timespec before calling clock_gettime_osx.
+    rist__get_system_boottime() previously returned the errno value
+    as its result instead of -1, which silently produced corrupted
+    NTP timestamps on macOS in restricted-syscall environments
+    (containers, sandboxes that block sysctl(KERN_BOOTTIME)). The
+    function now returns sysctl()'s actual return value, and
+    timestampNTP_u64() / timestampNTP_RTC_u64() defensively
+    zero-init their timespec so a clock_gettime failure can no
+    longer leak uninitialized stack into the time arithmetic and
+    falsely trip the "stream is dead" timeout.
+
+Windows / MSVC / MinGW:
+
+  - contrib/poll_win: fix the Windows poll() emulation busy-spinning
+    at 100% CPU when the watched fd set contains only sockets
+    (the common case for librist). The previous implementation fell
+    through to a 0 ms select() loop whenever no pipe/handle fds were
+    present; the timeout argument is now correctly honoured in the
+    sockets-only path.
+  - msvc: round out the contrib stdatomic shim and select native
+    C11 atomics where the toolchain supports them. Restores
+    correct atomic_uint_fast64_t behaviour on MSVC builds where
+    earlier shim coverage left some operations as plain reads /
+    writes, which (under heavy contention) could let the receiver
+    flow's last_pkt_received drift and produce false stream-dead
+    events on Windows.
+
+Tools:
+
+  - tools/rist2rist: add multi-peer bonding (multiple input or
+    output URLs on the command line), MPEG-TS Null Packet Deletion
+    (NPD), and Prometheus metrics export. rist2rist can now serve
+    as a load-balancing relay sitting close to the source of truth,
+    where small recovery buffers and large retry queues let
+    downstream receivers absorb network impairments without
+    inflating end-to-end latency.
+
+Contrib (bundled mbedtls):
+
+  - contrib/mbedtls: refresh bundled source from 2.26.0 to 2.28.10
+    (last LTS release of the 2.x series, 2025-03-24). 2.28.x is
+    strictly ABI-compatible with 2.26.x, so no librist code change
+    was required. Notable mbedtls fixes pulled in:
+      * CVE-2025-27809 (TLS server impersonation via missing
+        mbedtls_ssl_set_hostname)
+      * CVE-2025-27810 (TLS 1.2 Finished message corruption on
+        allocator/HW failure)
+      * CVE-2024-45157 (PSA HMAC_DRBG selection regression)
+      * Multi-year accumulation of fixes in AES, ECP, MPI, RSA,
+        PK, PKCS5, bignum and the new constant_time.c
+        side-channel-hardened primitives.
+    librist itself only consumes the classic mbedtls crypto API
+    (AES-CTR, CTR-DRBG, entropy, SHA-256, PBKDF2, MPI), so the
+    upgrade is a drop-in replacement for the bundled path. The
+    system-mbedtls build path (-Dbuiltin_mbedtls=false, the
+    default when a system libmbedcrypto is detected) is not
+    touched by this commit.
+  - contrib/mbedtls: widen the hardclock gate from defined(_MSC_VER)
+    to defined(_WIN32) in the bundled timing.c, so MinGW and
+    Clang-Windows builds now also pick up the
+    QueryPerformanceCounter implementation of
+    mbedtls_timing_hardclock().
+
+Contributors:
+  - Sergio Ammirata
+
+
 Changes for 0.2.13 (2026-04-18):
 --------------------------------
 

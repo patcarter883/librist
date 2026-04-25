@@ -171,13 +171,12 @@ int clock_gettime(clockid_t clock_id, struct timespec *tp)
  */
 static int rist__get_system_boottime(struct timeval *tv)
 {
-    int ret = sysctl((int[]){ CTL_KERN, KERN_BOOTTIME }, 2,
-                     tv, &(size_t){ sizeof(*tv) }, NULL, 0);
-
-    if (ret != 0)
-        return errno;
-
-    return 0;
+    /* sysctl() sets errno on failure and returns -1. Honour that contract
+     * instead of returning the errno value as the result, so callers (and
+     * in turn clock_gettime_osx) can follow the standard "-1 + errno set"
+     * convention documented above. */
+    return sysctl((int[]){ CTL_KERN, KERN_BOOTTIME }, 2,
+                  tv, &(size_t){ sizeof(*tv) }, NULL, 0);
 }
 
 /**

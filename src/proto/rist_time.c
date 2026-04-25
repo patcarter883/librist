@@ -19,7 +19,10 @@ uint64_t timestampNTP_u64(void) {
   // (136 years) and a theoretical resolution of 2−32 seconds (233 picoseconds).
   // NTP uses an epoch of January 1, 1900. Therefore, the first rollover occurs
   // on February 7, 2036.
-  timespec_t ts;
+  // Zero-initialize so that, if clock_gettime fails (e.g. a sandbox blocks
+  // sysctl(KERN_BOOTTIME) in the macOS shim), we return a stable zero value
+  // instead of stack garbage that would break every time comparison downstream.
+  timespec_t ts = {0, 0};
 #if defined(__APPLE__)
   clock_gettime_osx(CLOCK_MONOTONIC_OSX, &ts);
 #else
@@ -35,7 +38,7 @@ uint64_t timestampNTP_u64(void) {
 }
 
 uint64_t timestampNTP_RTC_u64(void) {
-  timespec_t ts;
+  timespec_t ts = {0, 0};
 #if defined(__APPLE__)
   clock_gettime_osx(CLOCK_REALTIME_OSX, &ts);
 #else

@@ -3325,6 +3325,7 @@ static struct rist_peer *peer_initialize(const char *url, struct rist_sender *se
 	p->receiver_ctx = receiver_ctx;
 	p->birthtime_local = timestampNTP_u64();
 	p->handled_first = true;
+	p->sd = -1;
 
 	return p;
 }

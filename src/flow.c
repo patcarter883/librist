@@ -325,9 +325,13 @@ int rist_receiver_associate_flow(struct rist_peer *p, uint32_t flow_id)
 	p->flow = f;
 	p->adv_flow_id = flow_id;
 	if (ret == 1) {
-		// TODO: lock the list?
+		/* Hold f->mutex across the realloc so concurrent walkers
+		 * (rist_best_rtt_index, output thread, stats path) don't
+		 * dereference a freed pointer if peer_lst moves. */
+		pthread_mutex_lock(&f->mutex);
 		struct rist_peer **new_lst = realloc(f->peer_lst, (f->peer_lst_len + 1) * sizeof(*f->peer_lst));
 		if (!new_lst) {
+			pthread_mutex_unlock(&f->mutex);
 			rist_log_priv(&ctx->common, RIST_LOG_ERROR,
 				"OOM growing flow peer list, dropping new peer\n");
 			p->flow = NULL;
@@ -336,6 +340,7 @@ int rist_receiver_associate_flow(struct rist_peer *p, uint32_t flow_id)
 		f->peer_lst = new_lst;
 		f->peer_lst[f->peer_lst_len] = p;
 		f->peer_lst_len++;
+		pthread_mutex_unlock(&f->mutex);
 	}
 
 	rist_log_priv(&ctx->common, RIST_LOG_INFO,

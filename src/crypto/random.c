@@ -58,6 +58,7 @@ static void _librist_crypto_random_init(void) {
 #endif
 
 int _librist_crypto_ramdom_get_bytes(uint8_t buf[], size_t buflen) {
+#if HAVE_MBEDTLS || HAVE_NETTLE
 	_librist_crypto_random_init();
 	int ret;
 #if HAVE_MBEDTLS
@@ -70,6 +71,10 @@ int _librist_crypto_ramdom_get_bytes(uint8_t buf[], size_t buflen) {
 	} while (ret != 0 && i < 10);
 #endif
 	return ret;
+#else
+	(void)buf; (void)buflen;
+	return -1;
+#endif
 }
 
 int _librist_crypto_random_get_string(char buf[], size_t len) {

@@ -170,10 +170,16 @@ void _librist_crypto_aes_ctr(const uint8_t key[], int key_size, uint8_t iv[], co
 		nettle_aes256_set_encrypt_key(&aes_ctx.u.ctx256, key);
 		f = (nettle_cipher_func *)nettle_aes256_encrypt;
 		break;
-	case 128:
-		nettle_aes128_set_encrypt_key(&aes_ctx.u.ctx128, key);
+	case 192:
+		nettle_aes192_set_encrypt_key(&aes_ctx.u.ctx192, key);
 		f = (nettle_cipher_func *)nettle_aes192_encrypt;
 		break;
+	case 128:
+		nettle_aes128_set_encrypt_key(&aes_ctx.u.ctx128, key);
+		f = (nettle_cipher_func *)nettle_aes128_encrypt;
+		break;
+	default:
+		return;
 	}
 	nettle_ctr_crypt(&aes_ctx.u, f, AES_BLOCK_SIZE, iv, payload_len, outbuf, inbuf);
 #else
@@ -237,8 +243,11 @@ static void _librist_crypto_psk_generate_nonce(struct rist_key *key) {
 void _librist_crypto_psk_decrypt(struct rist_key *key, uint8_t nonce[4], uint32_t seq_nbe, uint8_t gre_version, const uint8_t inbuf[], uint8_t outbuf[], size_t payload_len)
 {
 	uint32_t nonce_val = *((uint32_t *)nonce);
-    if (!nonce_val)
+    // A zero nonce never comes from a legitimate sender; refuse to decrypt
+    if (!nonce_val) {
+        key->bad_decryption = true;
         return;
+    }
 
     if (memcmp(nonce, key->gre_nonce, sizeof(key->gre_nonce)) != 0) {
         memcpy(key->gre_nonce, nonce, sizeof(key->gre_nonce));
@@ -247,8 +256,10 @@ void _librist_crypto_psk_decrypt(struct rist_key *key, uint8_t nonce[4], uint32_
         key->bad_count = 0;
     }
 
-    if (key->used_times > RIST_AES_KEY_REUSE_TIMES)
+    if (key->used_times > RIST_AES_KEY_REUSE_TIMES) {
+        key->bad_decryption = true;
         return;
+    }
 
     _librist_crypto_psk_prepare_iv(key, gre_version, seq_nbe);
 #if HAVE_MBEDTLS

@@ -9,6 +9,7 @@
 #include "proto/rist_time.h"
 #include "udp-private.h"
 #include "sha256.h"
+#include "crypto/random.h"
 #include <string.h>
 #include <stdlib.h>
 /*
@@ -42,19 +43,18 @@ uint64_t rist_siphash(uint64_t birthtime, uint32_t seq, const char *phrase)
 }
 */
 
-static bool seeded = false;
-//Generate pseudo-random 32 bit
+/* Used for the PSK GRE nonce (input to PBKDF2), the EAP identifier and
+ * peer SSRCs. Must be unpredictable, so route through the same CSPRNG
+ * we already use for SRP key material instead of plain rand(). */
 uint32_t prand_u32(void) {
-	if (!seeded) {
-		srand((unsigned int)timestampNTP_u64());
-		seeded = true;
-	}
-	uint32_t u32;
-	uint8_t *u8 = (void *) &u32;
-	for (size_t i = 0; i < sizeof(u32); i++) {
-		u8[i] = rand() % 256;//Use the lowest byte of rand()
-	}
-	return u32;
+	uint32_t u32 = 0;
+	if (_librist_crypto_ramdom_get_bytes((uint8_t *)&u32, sizeof(u32)) == 0)
+		return u32;
+	/* CSPRNG failure is unexpected post-init; mix the wall clock so we
+	 * at least don't return a constant, and avoid returning 0 since the
+	 * nonce generator spins on it. */
+	uint32_t fallback = (uint32_t)timestampNTP_u64();
+	return fallback ? fallback : 0xa5a5a5a5u;
 }
 
 uint32_t rand_u32(void)

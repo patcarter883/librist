@@ -73,13 +73,16 @@ int _librist_crypto_ramdom_get_bytes(uint8_t buf[], size_t buflen) {
 }
 
 int _librist_crypto_random_get_string(char buf[], size_t len) {
-	char charset[] = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!?";//Cut to 64 characters to deal with modulo bias
+	// 64 chars to keep the modulo bias-free (power of two)
+	static const char charset[] = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!?";
+	const size_t charset_n = sizeof(charset) - 1;
 	uint8_t rand_buf[128];
+	if (len > sizeof(rand_buf))
+		return -1;
 	int ret = _librist_crypto_ramdom_get_bytes(rand_buf, len);
 	if (ret != 0)
 		return ret;
-	for (size_t i=0; i< len; i++) {
-		buf[i] = charset[rand_buf[i] % sizeof(charset) -1];
-	}
+	for (size_t i = 0; i < len; i++)
+		buf[i] = charset[rand_buf[i] % charset_n];
 	return 0;
 }

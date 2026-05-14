@@ -244,19 +244,37 @@ static bool flow_has_peer(struct rist_flow *f, uint32_t flow_id, uint32_t peer_i
 	return false;
 }
 
+/* Soft cap on simultaneous receiver flows. A peer can advertise an
+ * arbitrary 32-bit flow_id and we always create_flow() on a previously
+ * unseen one, so without a cap an attacker that can land authenticated
+ * traffic (or any traffic on a non-encrypted receiver) can exhaust
+ * memory by walking flow_id space. 256 is well past any legitimate
+ * deployment we've seen. */
+#define RIST_MAX_FLOWS 256
+
 int rist_receiver_associate_flow(struct rist_peer *p, uint32_t flow_id)
 {
 	struct rist_receiver *ctx = p->receiver_ctx;
 	int ret = 0;
 
 	// Find the flow based on the flow_id
-	struct rist_flow *f;
+	struct rist_flow *f = NULL;
 	if (ctx->common.profile > RIST_PROFILE_SIMPLE)
 	{
-		for (f = ctx->common.FLOWS; f != NULL; f = f->next) {
-			if (f->flow_id == flow_id) {
-				break;
+		pthread_mutex_lock(&ctx->common.flows_lock);
+		size_t flow_count = 0;
+		for (struct rist_flow *cur = ctx->common.FLOWS; cur != NULL; cur = cur->next) {
+			flow_count++;
+			if (cur->flow_id == flow_id) {
+				f = cur;
 			}
+		}
+		pthread_mutex_unlock(&ctx->common.flows_lock);
+		if (!f && flow_count >= RIST_MAX_FLOWS) {
+			rist_log_priv(&ctx->common, RIST_LOG_ERROR,
+				"Refusing to create FLOW #%"PRIu32": cap of %d flows reached\n",
+				flow_id, RIST_MAX_FLOWS);
+			return -1;
 		}
 	} else
 	{

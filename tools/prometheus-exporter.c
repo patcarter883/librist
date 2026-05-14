@@ -376,24 +376,34 @@ void rist_prometheus_handle_sender_peer_stats(struct rist_prometheus_stats *ctx,
 	}
 
 	cJSON *root = cJSON_Parse(stats_container->stats_json);
-	cJSON *senderstats = cJSON_GetObjectItem(root,"sender-stats");
 	double ts_null = 0;
 	double ts_nulls_bandwidth = 0;
-	cJSON *peer = senderstats->child;
-	while( peer ) {
-		int peer_id = cJSON_GetObjectItem(peer,"id")->valueint;
-		if (stats->peer_id == (uint32_t)peer_id)
-		{
-			cJSON *peerstats = cJSON_GetObjectItem(peer,"stats");
-			if (stats_container->version > 0) {
-				ts_null = cJSON_GetObjectItem(peerstats,"ts_null")->valuedouble;
-				ts_nulls_bandwidth = cJSON_GetObjectItem(peerstats,"ts_nulls_bandwidth")->valuedouble;
-			}	
-			break;
+	if (root != NULL) {
+		cJSON *senderstats = cJSON_GetObjectItem(root, "sender-stats");
+		cJSON *peers = senderstats ? cJSON_GetObjectItem(senderstats, "peers") : NULL;
+		if (cJSON_IsArray(peers)) {
+			for (cJSON *peer = peers->child; peer != NULL; peer = peer->next) {
+				cJSON *id_item = cJSON_GetObjectItem(peer, "id");
+				if (!cJSON_IsNumber(id_item) || stats->peer_id != (uint32_t)id_item->valueint) {
+					continue;
+				}
+
+				cJSON *peerstats = cJSON_GetObjectItem(peer, "stats");
+				if (stats_container->version > 0 && cJSON_IsObject(peerstats)) {
+					cJSON *ts_null_item = cJSON_GetObjectItem(peerstats, "ts_null");
+					cJSON *ts_nulls_bandwidth_item = cJSON_GetObjectItem(peerstats, "ts_nulls_bandwidth");
+					if (cJSON_IsNumber(ts_null_item)) {
+						ts_null = ts_null_item->valuedouble;
+					}
+					if (cJSON_IsNumber(ts_nulls_bandwidth_item)) {
+						ts_nulls_bandwidth = ts_nulls_bandwidth_item->valuedouble;
+					}
+				}
+				break;
+			}
 		}
-		peer = peer->next;
+		cJSON_Delete(root);
 	}
-	cJSON_Delete(senderstats);
 
 	s->container[s->container_offset].rist_sender_peer_sent_packets = s->counters.rist_sender_peer_sent_packets += stats->sent;
 	s->container[s->container_offset].rist_sender_peer_ts_null_packets = s->counters.rist_sender_peer_ts_null_packets += ts_null;

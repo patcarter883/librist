@@ -995,6 +995,10 @@ failed:
 
 	free(*bytes_s);
 	free(*bytes_v);
+	*bytes_s = NULL;
+	*bytes_v = NULL;
+	*len_s = 0;
+	*len_v = 0;
 
 	return -1;
 }

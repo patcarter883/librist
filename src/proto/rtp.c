@@ -68,6 +68,11 @@ void rist_rtcp_write_sdes(uint8_t *buf, int *offset,
                                         const char *name,
                                         const uint32_t flow_id) {
   size_t namelen = strlen(name);
+  /* sdes->name_len is uint8_t; if a caller hands us a longer cname,
+   * clamp before computing the wire size so the length byte and the
+   * actual bytes we copy stay in agreement. */
+  if (namelen > 255)
+    namelen = 255;
   size_t sdes_size = ((10 + namelen + 1) + 3) & ~3;
   size_t padding = sdes_size - namelen - 10;
   struct rist_rtcp_sdes_pkt *sdes =

@@ -72,6 +72,10 @@ static int tun_ioctl_socket(void)
 
 int rist_tun_set_ip(const char *dev, const char *ip, int prefix_len)
 {
+	if (prefix_len < 0 || prefix_len > 32) {
+		fprintf(stderr, "Invalid prefix length: %d\n", prefix_len);
+		return -1;
+	}
 	int s = tun_ioctl_socket();
 	if (s < 0)
 		return -1;
@@ -95,7 +99,13 @@ int rist_tun_set_ip(const char *dev, const char *ip, int prefix_len)
 		return -1;
 	}
 
-	uint32_t mask = prefix_len ? htonl(~((1U << (32 - prefix_len)) - 1)) : 0;
+	uint32_t mask;
+	if (prefix_len == 0)
+		mask = 0;
+	else if (prefix_len == 32)
+		mask = htonl(0xFFFFFFFFu);
+	else
+		mask = htonl(~((1U << (32 - prefix_len)) - 1));
 	struct sockaddr_in *netmask = (struct sockaddr_in *)&ifr.ifr_netmask;
 	netmask->sin_family = AF_INET;
 	netmask->sin_addr.s_addr = mask;

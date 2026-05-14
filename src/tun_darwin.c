@@ -140,6 +140,10 @@ int rist_tun_write(int fd, const uint8_t *buf, size_t len)
 
 int rist_tun_set_ip(const char *dev, const char *ip, int prefix_len)
 {
+	if (prefix_len < 0 || prefix_len > 32) {
+		fprintf(stderr, "Invalid prefix length: %d\n", prefix_len);
+		return -1;
+	}
 	struct ifaliasreq ifra;
 	memset(&ifra, 0, sizeof(ifra));
 	strncpy(ifra.ifra_name, dev, IFNAMSIZ - 1);
@@ -155,8 +159,12 @@ int rist_tun_set_ip(const char *dev, const char *ip, int prefix_len)
 	struct sockaddr_in *mask = (struct sockaddr_in *)&ifra.ifra_mask;
 	mask->sin_len = sizeof(*mask);
 	mask->sin_family = AF_INET;
-	mask->sin_addr.s_addr = prefix_len ?
-		htonl(~((1U << (32 - prefix_len)) - 1)) : 0;
+	if (prefix_len == 0)
+		mask->sin_addr.s_addr = 0;
+	else if (prefix_len == 32)
+		mask->sin_addr.s_addr = htonl(0xFFFFFFFFu);
+	else
+		mask->sin_addr.s_addr = htonl(~((1U << (32 - prefix_len)) - 1));
 
 	struct sockaddr_in *dst = (struct sockaddr_in *)&ifra.ifra_broadaddr;
 	dst->sin_len = sizeof(*dst);

@@ -16,6 +16,7 @@
 #include "librist/tun.h"
 
 #include <errno.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -68,8 +69,17 @@ int rist_tun_open(const char *requested_name, char *actual_name, size_t name_len
 	 */
 	unsigned int unit = 0;
 	if (requested_name && requested_name[0]) {
-		if (strncmp(requested_name, "utun", 4) == 0)
-			unit = (unsigned int)atoi(requested_name + 4) + 1;
+		if (strncmp(requested_name, "utun", 4) == 0) {
+			const char *suffix = requested_name + 4;
+			char *endptr = NULL;
+			errno = 0;
+			unsigned long parsed = strtoul(suffix, &endptr, 10);
+			if (suffix[0] != '\0' && errno == 0 &&
+			    endptr != suffix && *endptr == '\0' &&
+			    parsed < (UINT_MAX - 1)) {
+				unit = (unsigned int)parsed + 1;
+			}
+		}
 	}
 	sc.sc_unit = unit;
 

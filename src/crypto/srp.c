@@ -78,6 +78,11 @@ int _librist_srp_mbedtls_wrap_random(void *unused, unsigned char * buf, size_t s
 #define BIGNUM_SUB_BIG(prod, a, b) ret = mbedtls_mpi_sub_mpi(prod, a, b)
 #define BIGNUM_EQUALS(num, comp) (mbedtls_mpi_cmp_int(num, comp) == 0)
 #define BIGNUM_WRITE_BYTES(num, bytes, bytes_size) if (mbedtls_mpi_write_binary(num, bytes, bytes_size) != 0) {return -1; }
+/* Variant that jumps to a cleanup label instead of returning, for use inside
+ * functions that own heap that needs freeing on failure. */
+#define BIGNUM_WRITE_BYTES_OR_GOTO(num, bytes, bytes_size, lbl) do { \
+	if (mbedtls_mpi_write_binary(num, bytes, bytes_size) != 0) goto lbl; \
+} while (0)
 #define BIGNUM_WRITE_BYTES_ALLOC(num, bytes_pp, len_p, lbl) do {\
 	*len_p = mbedtls_mpi_size(num); \
 	*bytes_pp = malloc(*len_p); \
@@ -118,6 +123,12 @@ void librist_crypto_srp_mbedtls_hash_init(HASH_CONTEXT *ctx, bool correct_init) 
 #define BIGNUM_SUB_BIG(prod, a, b) mpz_sub(prod, a, b)
 #define BIGNUM_EQUALS(num, comp) (mpz_cmp_ui(num, comp) == 0)
 #define BIGNUM_WRITE_BYTES(num, bytes, bytes_size) mpz_export(bytes, NULL, 1, 1, 0, 0, num)
+/* Nettle's mpz_export into a caller-provided buffer cannot fail; mirror the
+ * mbedTLS-side macro so the source compiles unchanged. */
+#define BIGNUM_WRITE_BYTES_OR_GOTO(num, bytes, bytes_size, lbl) do { \
+	(void)(lbl); \
+	mpz_export(bytes, NULL, 1, 1, 0, 0, num); \
+} while (0)
 #define BIGNUM_WRITE_BYTES_ALLOC(num, bytes_pp, len_p, lbl) do {\
 	*bytes_pp = mpz_export(NULL, len_p, 1, 1, 0, 0, num); \
 	if (!*bytes_pp) { goto lbl; } \
@@ -216,9 +227,7 @@ static int librist_crypto_srp_calc_x(BIGNUM *salt, const char * username, const 
 	if (librist_crypto_srp_hash_final(&hash_ctx, &hash_data[salt_len]) != 0)
 		goto failed;
 
-	BIGNUM_WRITE_BYTES(salt, hash_data, salt_len);
-	if (ret != 0)
-		goto failed;
+	BIGNUM_WRITE_BYTES_OR_GOTO(salt, hash_data, salt_len, failed);
 
 	HASH_CONTEXT_FREE(&hash_ctx);
 

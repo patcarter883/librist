@@ -134,5 +134,6 @@ void rist_rtcp_write_xr_echoreq(uint8_t *buf, int *offset,
   peer->last_sender_report_ts = now;
   block->ntp_msw = htobe32((uint32_t)(now >> 32));
   block->ntp_lsw = htobe32((uint32_t)(now & 0x000000000FFFFFFFF));
-  xr_hdr->len = htobe16(1 + sizeof(*block) / 4);
+  // RFC 3550: length is (32-bit words in header+payload) - 1
+  xr_hdr->len = htobe16(((sizeof(*xr_hdr) + sizeof(*block)) / 4) - 1);
 }

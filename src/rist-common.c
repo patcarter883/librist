@@ -1626,7 +1626,13 @@ static void rist_sender_recv_nack(struct rist_peer *peer,
 			rist_log_priv(get_cctx(peer), RIST_LOG_ERROR, "Non-Rist nack packet (%s).\n", rtcp_nack->name);
 			return; /* Ignore app-type not RIST */
 		}
-		uint16_t nrecords =	ntohs(rtcp->len) - 2;
+		uint16_t raw_len = ntohs(rtcp->len);
+		if (raw_len < 2)
+			return;
+		uint16_t nrecords = raw_len - 2;
+		size_t needed = sizeof(struct rist_rtcp_nack_range) + (size_t)nrecords * sizeof(struct rist_rtp_nack_record);
+		if (needed > payload_len)
+			return;
 		//rist_log_priv(get_cctx(peer), RIST_LOG_ERROR, "Nack (RbRR), %d record(s)\n", nrecords);
 		for (i = 0; i < nrecords; i++) {
 			uint16_t missing;
@@ -1643,7 +1649,13 @@ static void rist_sender_recv_nack(struct rist_peer *peer,
 	} else if (rtcp->ptype == PTYPE_NACK_BITMASK) {
 		struct rist_rtcp_nack_bitmask *rtcp_nack = (struct rist_rtcp_nack_bitmask *) payload;
 		(void)rtcp_nack;
-		uint16_t nrecords =	ntohs(rtcp->len) - 2;
+		uint16_t raw_len = ntohs(rtcp->len);
+		if (raw_len < 2)
+			return;
+		uint16_t nrecords = raw_len - 2;
+		size_t needed = sizeof(struct rist_rtcp_nack_bitmask) + (size_t)nrecords * sizeof(struct rist_rtp_nack_record);
+		if (needed > payload_len)
+			return;
 		//rist_log_priv(get_cctx(peer), RIST_LOG_ERROR, "Nack (BbRR), %d record(s)\n", nrecords);
 		for (i = 0; i < nrecords; i++) {
 			uint16_t missing;
@@ -2049,9 +2061,13 @@ static void rist_handle_rr_pkt(struct rist_peer *peer, struct rist_rtcp_rr_pkt *
 	uint64_t rtt;
 	if (!peer->last_sender_report_ts)
 		return;
+	uint64_t dlsr = (uint64_t)be32toh(rr->dlsr) << 16;
 	if (lsr_ntp == lsr_tmp) {
 		uint64_t now = timestampNTP_u64();
-		rtt = now - peer->last_sender_report_ts - ((uint64_t)be32toh(rr->dlsr) << 16);
+		// guard the unsigned subtraction; dlsr comes from the wire
+		if (peer->last_sender_report_ts + dlsr > now)
+			return;
+		rtt = now - peer->last_sender_report_ts - dlsr;
 
 	} else {
 		if (!lsr_ntp)//this can happen on the first time
@@ -2061,9 +2077,9 @@ static void rist_handle_rr_pkt(struct rist_peer *peer, struct rist_rtcp_rr_pkt *
 		uint64_t now_rtc = timestampNTP_RTC_u64();
 		lsr_ntp = (lsr_ntp << 16) & 0x0000FFFFFFFF0000;
 		lsr_ntp |= (now_rtc & 0xFFFF000000000000);
-		if (lsr_ntp > now_rtc)
+		if (lsr_ntp > now_rtc || lsr_ntp + dlsr > now_rtc)
 			return;
-		rtt  = now_rtc - lsr_ntp  - ((uint64_t)be32toh(rr->dlsr) << 16);
+		rtt  = now_rtc - lsr_ntp  - dlsr;
 	}
 	peer->last_rtt = rtt;
 	peer->eight_times_rtt -= peer->eight_times_rtt / 8;
@@ -2075,39 +2091,55 @@ static void rist_handle_rr_pkt(struct rist_peer *peer, struct rist_rtcp_rr_pkt *
 	}
 }
 
-static void rist_handle_xr_pkt(struct rist_peer *peer, uint8_t xr_pkt[])
+static void rist_handle_xr_pkt(struct rist_peer *peer, uint8_t xr_pkt[], size_t pkt_len)
 {
 	size_t offset = 0;
+	if (pkt_len < sizeof(struct rist_rtcp_hdr))
+		return;
 	struct rist_rtcp_hdr *hdr = (struct rist_rtcp_hdr *)&xr_pkt[offset];
-	size_t payload_len = (be16toh(hdr->len) +1) * 4;
-	ssize_t bytes_remaining = payload_len - sizeof(struct rist_rtcp_hdr);
+	// clamp the declared len to what we actually received
+	size_t payload_len = ((size_t)be16toh(hdr->len) + 1) * 4;
+	if (payload_len > pkt_len)
+		payload_len = pkt_len;
+	if (payload_len < sizeof(struct rist_rtcp_hdr))
+		return;
+	size_t bytes_remaining = payload_len - sizeof(struct rist_rtcp_hdr);
 	offset += sizeof(struct rist_rtcp_hdr);
-	while (bytes_remaining > 0)
+	while (bytes_remaining >= sizeof(struct rist_rtcp_xr_block_hdr))
 	{
 		struct rist_rtcp_xr_block_hdr *block = (struct rist_rtcp_xr_block_hdr *)&xr_pkt[offset];
 		uint8_t block_type = block->type;
-		uint16_t block_length = (be16toh(block->length)+1) * 4;
+		size_t block_length = ((size_t)be16toh(block->length) + 1) * 4;
+		if (block_length < sizeof(struct rist_rtcp_xr_block_hdr) ||
+		    block_length > bytes_remaining)
+			return;
 		if (block_type == 5)
 		{
+			if (block_length < sizeof(struct rist_rtcp_xr_dlrr))
+				return;
 			struct rist_rtcp_xr_dlrr *dlrr = (struct rist_rtcp_xr_dlrr *)&xr_pkt[offset];
 			uint32_t ssrc  = be32toh(dlrr->ssrc);
 			if (ssrc != peer->peer_ssrc)
 				return;
 			uint64_t lrr_tmp = (peer->last_sender_report_ts >> 16) & 0xFFFFFFFF;
 			uint64_t lrr = be32toh(dlrr->lrr);
+			uint64_t delay = (uint64_t)be32toh(dlrr->delay) << 16;
 			uint64_t rtt;
 			if (lrr == lrr_tmp)
 			{
-				rtt = timestampNTP_u64() - peer->last_sender_report_ts - ((uint64_t)be32toh(dlrr->delay) << 16);
-
+				uint64_t now = timestampNTP_u64();
+				// guard the unsigned subtraction; delay comes from the wire
+				if (peer->last_sender_report_ts + delay > now)
+					return;
+				rtt = now - peer->last_sender_report_ts - delay;
 			} else {
 				//Slightly less accurate, needed when RTT is bigger than our RTCP interval.
 				uint64_t now = timestampNTP_u64();
 				lrr = (lrr << 16) & 0x0000FFFFFFFF0000;
 				lrr |= (now & 0xFFFF000000000000);
-				if (lrr > now)
+				if (lrr > now || lrr + delay > now)
 					return;
-				rtt  = now - lrr  - ((uint64_t)be32toh(dlrr->delay) << 16);
+				rtt  = now - lrr - delay;
 			}
 			peer->last_rtt = rtt;
 			peer->eight_times_rtt -= peer->eight_times_rtt /8;
@@ -2159,12 +2191,12 @@ static void rist_recv_rtcp(struct rist_peer *peer, uint32_t seq,
 		pkt = (uint8_t*)payload->data + processed_bytes;
 		struct rist_rtcp_hdr *rtcp = (struct rist_rtcp_hdr *)pkt;
 		/* safety checks */
-		size_t bytes_left = payload->size - processed_bytes + 1;
+		size_t bytes_left = payload->size - processed_bytes;
 
 		if ( bytes_left < 4 )
 		{
 			/* we must have at least 4 bytes */
-			rist_log_priv(ctx, RIST_LOG_ERROR, "Rist rtcp packet must have at least 4 bytes, we have %d\n",
+			rist_log_priv(ctx, RIST_LOG_ERROR, "Rist rtcp packet must have at least 4 bytes, we have %zu\n",
 					bytes_left);
 			return;
 		}
@@ -2172,12 +2204,13 @@ static void rist_recv_rtcp(struct rist_peer *peer, uint32_t seq,
 		ptype = rtcp->ptype;
 		subtype = rtcp->flags & 0x1f;
 		records = be16toh(rtcp->len);
-		uint16_t bytes = (uint16_t)(4 * (1 + records));
-		if (bytes > bytes_left)
+		// in size_t so 4*(1+0xFFFF) cannot wrap to 0 and spin the loop
+		size_t bytes = (size_t)4 * ((size_t)1 + records);
+		if (bytes < 4 || bytes > bytes_left)
 		{
 			/* check for a sane number of bytes */
-			rist_log_priv(ctx, RIST_LOG_ERROR, "Malformed feedback packet, expecting %u bytes in the" \
-					" packet, got a buffer of %u bytes. ptype = %d\n", bytes,
+			rist_log_priv(ctx, RIST_LOG_ERROR, "Malformed feedback packet, expecting %zu bytes in the" \
+					" packet, got a buffer of %zu bytes. ptype = %d\n", bytes,
 					bytes_left, ptype);
 			return;
 		}
@@ -2191,11 +2224,15 @@ static void rist_recv_rtcp(struct rist_peer *peer, uint32_t seq,
 					break;
 				}
 				else if (subtype == ECHO_RESPONSE) {
+					if (bytes < sizeof(struct rist_rtcp_echoext))
+						break;
 					struct rist_rtcp_echoext *echoresponse = (struct rist_rtcp_echoext *) pkt;
 					rist_rtcp_handle_echo_response(peer, echoresponse);
 					break;
 				}
 				else if (subtype == ECHO_REQUEST) {
+					if (bytes < sizeof(struct rist_rtcp_echoext))
+						break;
 					struct rist_rtcp_echoext *echorequest = (struct rist_rtcp_echoext *)pkt;
 					rist_rtcp_handle_echo_request(peer, echorequest);
 					break;
@@ -2222,17 +2259,25 @@ static void rist_recv_rtcp(struct rist_peer *peer, uint32_t seq,
 			case PTYPE_SDES:
 				{
 					peer->stats_sender_instant.received++;
-					uint8_t name_length = pkt[9];
-					if (name_length > bytes_left)
+					if (bytes_left < RTCP_SDES_SIZE)
 					{
-						/* check for a sane number of bytes */
-						rist_log_priv(ctx, RIST_LOG_ERROR, "Malformed SDES packet, wrong cname len %u, got a " \
-								"buffer of %u bytes.\n", name_length, bytes_left);
+						rist_log_priv(ctx, RIST_LOG_ERROR, "Malformed SDES packet, %zu bytes < SDES header size\n",
+								bytes_left);
+						return;
+					}
+					uint8_t name_length = pkt[9];
+					// must fit the remaining packet AND receiver_name (incl NUL)
+					if ((size_t)name_length + RTCP_SDES_SIZE > bytes_left ||
+					    name_length >= sizeof(peer->receiver_name))
+					{
+						rist_log_priv(ctx, RIST_LOG_ERROR, "Malformed SDES packet, cname len %u out of bounds (left %zu, max %zu)\n",
+								name_length, bytes_left, sizeof(peer->receiver_name) - 1);
 						return;
 					}
 					if (memcmp(pkt + RTCP_SDES_SIZE, peer->receiver_name, name_length) != 0)
 					{
 						memcpy(peer->receiver_name, pkt + RTCP_SDES_SIZE, name_length);
+						peer->receiver_name[name_length] = '\0';
 						rist_log_priv(ctx, RIST_LOG_INFO, "Peer %"PRIu32" receiver name is now: %s\n",
 								peer->adv_peer_id, peer->receiver_name);
 					}
@@ -2263,16 +2308,18 @@ static void rist_recv_rtcp(struct rist_peer *peer, uint32_t seq,
 				break;
 			}
 			case PTYPE_SR:;
+				if (bytes < sizeof(struct rist_rtcp_sr_pkt))
+					break;
 				struct rist_rtcp_sr_pkt *sr = (struct rist_rtcp_sr_pkt *)pkt;
 				rist_handle_sr_pkt(peer, sr);
 				break;
 			case PTYPE_XR:
-				rist_handle_xr_pkt(peer, pkt);
+				rist_handle_xr_pkt(peer, pkt, bytes);
 				break;
 			default:
 				rist_log_priv(ctx, RIST_LOG_DEBUG, "Unrecognized RTCP packet with PTYPE=%02x!!\n", ptype);
 		}
-		processed_bytes += bytes;
+		processed_bytes += (uint16_t)bytes;
 	}
 
 }
@@ -2494,8 +2541,8 @@ static void rist_peer_recv(struct evsocket_ctx *evctx, int fd, short revents, vo
 		size_t nonce_offset = 0;
 		bool odd_nonce = false;
 		if (has_key) {
-			odd_nonce = CHECK_BIT(recv_buf[nonce_offset], 7);
 			nonce_offset = payload_offset;
+			odd_nonce = CHECK_BIT(recv_buf[nonce_offset], 7);
 			payload_offset += 4;
 		}
 
@@ -2569,6 +2616,7 @@ static void rist_peer_recv(struct evsocket_ctx *evctx, int fd, short revents, vo
 		if (gre_proto == RIST_GRE_PROTOCOL_TYPE_VSF) {
 			if (recv_bufsize < payload_offset + 4) {
 				rist_log_priv(get_cctx(peer), RIST_LOG_ERROR, "Packet too small: %d bytes, ignoring ...\n", recv_bufsize);
+				return;
 			}
 
 			uint16_t vsf_proto = 0;
@@ -2623,6 +2671,12 @@ protocol_bypass:
 
     struct rist_rtp_hdr *rtp = (struct rist_rtp_hdr *)&recv_buf[payload_offset];
 	if (cctx->profile == RIST_PROFILE_SIMPLE || gre_proto == RIST_GRE_PROTOCOL_TYPE_REDUCED) {
+		// the earlier 4-byte check only covers the reduced port subheader
+		if (recv_bufsize < payload_offset + sizeof(*rtp))
+		{
+			rist_log_priv(get_cctx(peer), RIST_LOG_ERROR, "Packet too small for RTP header: %zu bytes, ignoring ...\n", recv_bufsize);
+			return;
+		}
 		/* Double check for a valid rtp header */
 		if ((rtp->flags & 0xc0) != 0x80)
 		{
@@ -2766,7 +2820,10 @@ protocol_bypass:
 
 	if (gre_proto == RIST_GRE_PROTOCOL_TYPE_KEEPALIVE) {
 		struct rist_keepalive_info info;
-		_librist_proto_gre_parse_keepalive(&recv_buf[payload_offset], recv_bufsize - payload_offset, &info);
+		if (_librist_proto_gre_parse_keepalive(&recv_buf[payload_offset], recv_bufsize - payload_offset, &info) != 0) {
+			p->last_pkt_received = now;
+			return;
+		}
 		if (memcmp(&info.ka, &p->data, sizeof(peer->data)) != 0) {
 			rist_log_priv(get_cctx(peer), RIST_LOG_INFO,
 				"New keepalive received. MAC: %x:%x:%x:%x:%x:%x"
@@ -2836,6 +2893,13 @@ protocol_bypass:
 			payload.data = (void *)data_payload;
 
 			if (CHECK_BIT(rtp->flags, 4)) {
+				// X bit promises an extension header, the packet may not actually have it
+				if (payload.size < sizeof(struct rist_rtp_hdr_ext)) {
+					rist_log_priv(get_cctx(peer), RIST_LOG_ERROR,
+						"Packet too small for RTP extension header: %zu bytes, ignoring ...\n",
+						payload.size);
+					return;
+				}
 				uint8_t *data_payload_out = &recv_buf_npd[0];
 				//RTP extension header
 				struct rist_rtp_hdr_ext * hdr_ext = (struct rist_rtp_hdr_ext *)(&recv_buf[payload_offset]);

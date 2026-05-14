@@ -88,28 +88,21 @@ static void _librist_crypto_aes_key(struct rist_key *key)
     mbedtls_md_context_t sha_ctx;
     const mbedtls_md_info_t *info_sha;
     int ret = -1;
-    /* Setup the hash/HMAC function, for the PBKDF2 function. */
     mbedtls_md_init(&sha_ctx);
     info_sha = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
-    if (info_sha == NULL) {
-            // rist_log_priv(cctx, RIST_LOG_ERROR, "Failed to setup Mbed TLS
-            // hash info\n");
-    }
+    if (info_sha == NULL)
+        goto fail;
 
     ret = mbedtls_md_setup(&sha_ctx, info_sha, 1);
-    if (ret != 0) {
-            // rist_log_priv(cctx, RIST_LOG_ERROR, "Failed to setup Mbed TLS MD
-            // ctx");
-    }
+    if (ret != 0)
+        goto fail;
 
     ret = mbedtls_pkcs5_pbkdf2_hmac(
         &sha_ctx, (const unsigned char *)key->password, key->password_len,
         key->gre_nonce, sizeof(key->gre_nonce),
         RIST_PBKDF2_HMAC_SHA256_ITERATIONS, key->key_size / 8, aes_key);
-    if (ret != 0) {
-            // rist_log_priv(cctx, RIST_LOG_ERROR, "Mbed TLS pbkdf2 function
-            // failed\n");
-    }
+    if (ret != 0)
+        goto fail;
     mbedtls_md_free(&sha_ctx);
 #elif HAVE_NETTLE
     nettle_pbkdf2_hmac_sha256(key->password_len,(const uint8_t*)key->password,
@@ -149,6 +142,15 @@ static void _librist_crypto_aes_key(struct rist_key *key)
     aes_key_setup(aes_key, key->aes_key_sched, key->key_size);
 #endif
     key->used_times = 0;
+    return;
+#if HAVE_MBEDTLS
+fail:
+    mbedtls_md_free(&sha_ctx);
+    /* Leave any prior key install in place but force the lockout flag so we
+     * don't run AES-CTR with whatever happened to be on the stack. */
+    key->bad_decryption = true;
+    return;
+#endif
 }
 
 //This doesn't really belong here (not PSK related), but since all other crypto interop stuff is here it goes in here..

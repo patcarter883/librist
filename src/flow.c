@@ -199,8 +199,15 @@ static struct rist_flow *create_flow(struct rist_receiver *ctx, uint32_t flow_id
 	f->stats_next_time = timestampNTP_u64();
 	f->max_output_jitter = ctx->common.rist_max_jitter;
 	f->dataout_fifo_queue = calloc(ctx->fifo_queue_size, sizeof(*f->dataout_fifo_queue));
+	if (!f->dataout_fifo_queue) {
+		rist_log_priv(&ctx->common, RIST_LOG_ERROR,
+			"OOM allocating dataout fifo queue (%zu entries)\n", ctx->fifo_queue_size);
+		free(f);
+		return NULL;
+	}
 	int ret = pthread_cond_init(&f->condition, NULL);
 	if (ret) {
+		free(f->dataout_fifo_queue);
 		free(f);
 		rist_log_priv(&ctx->common, RIST_LOG_ERROR, "Error %d calling pthread_cond_init\n", ret);
 		return NULL;
@@ -209,6 +216,7 @@ static struct rist_flow *create_flow(struct rist_receiver *ctx, uint32_t flow_id
 	ret = pthread_mutex_init(&f->mutex, NULL);
 	if (ret){
 		pthread_cond_destroy(&f->condition);
+		free(f->dataout_fifo_queue);
 		free(f);
 		rist_log_priv(&ctx->common, RIST_LOG_ERROR, "Error %d calling pthread_mutex_init\n", ret);
 		return NULL;

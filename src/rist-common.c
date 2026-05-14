@@ -2686,14 +2686,19 @@ protocol_bypass:
 	if (!p)
 		p = _librist_peer_match_peer_addr(peer, family, addr);
 
-    struct rist_rtp_hdr *rtp = (struct rist_rtp_hdr *)&recv_buf[payload_offset];
+	/* The RTP header only exists on the data path (Simple profile or
+	 * Main-profile REDUCED); leave the pointer NULL elsewhere so a
+	 * stray deref shows up at compile/run time instead of silently
+	 * reading past recv_bufsize on a short FULL/EAPOL/KEEPALIVE
+	 * datagram. */
+	struct rist_rtp_hdr *rtp = NULL;
 	if (cctx->profile == RIST_PROFILE_SIMPLE || gre_proto == RIST_GRE_PROTOCOL_TYPE_REDUCED) {
-		// the earlier 4-byte check only covers the reduced port subheader
-		if (recv_bufsize < payload_offset + sizeof(*rtp))
+		if (recv_bufsize < payload_offset + sizeof(struct rist_rtp_hdr))
 		{
 			rist_log_priv(get_cctx(peer), RIST_LOG_ERROR, "Packet too small for RTP header: %zu bytes, ignoring ...\n", recv_bufsize);
 			return;
 		}
+		rtp = (struct rist_rtp_hdr *)&recv_buf[payload_offset];
 		/* Double check for a valid rtp header */
 		if ((rtp->flags & 0xc0) != 0x80)
 		{
@@ -2878,17 +2883,17 @@ protocol_bypass:
 		return;
 	}
 
-	// This is for legacy compatibility (to be removed later)
-	if (rtp->payload_type == PTYPE_XR_LEGACY)
-		rtp->payload_type = PTYPE_XR;
-
 	uint32_t rtp_time = 0;
 	uint64_t source_time = 0;
-	uint8_t payload_type = rtp->payload_type;
-	uint8_t payload_type_nomarker_bit = rtp->payload_type & 127;
+	uint8_t payload_type = 0;
 	int ts_null_bytes = 0;
 
 	if (cctx->profile == RIST_PROFILE_SIMPLE || gre_proto == RIST_GRE_PROTOCOL_TYPE_REDUCED) {
+		// This is for legacy compatibility (to be removed later)
+		if (rtp->payload_type == PTYPE_XR_LEGACY)
+			rtp->payload_type = PTYPE_XR;
+		payload_type = rtp->payload_type;
+		uint8_t payload_type_nomarker_bit = rtp->payload_type & 127;
 		// Finish defining the payload (we assume reduced header)
 		// The check is for 200-205 and 72-77 (payload type minus 128)
 		if(payload_type_nomarker_bit < 72 || payload_type_nomarker_bit > 77) {

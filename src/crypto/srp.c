@@ -494,6 +494,11 @@ const uint8_t *librist_crypto_srp_authenticator_get_key(struct librist_crypto_sr
 //B=(kv + g^b) % N
 int librist_crypto_srp_authenticator_handle_A(struct librist_crypto_srp_authenticator_ctx *ctx, uint8_t *A_buf, size_t A_buf_len) {
 	int ret = 0;
+	/* Bound the attacker-supplied operand against N. Without this,
+	 * mbedtls_mpi_exp_mod() runs in time proportional to A_buf_len,
+	 * giving a peer-pre-auth CPU DoS handle. */
+	if (A_buf_len == 0 || A_buf_len > BIGNUM_GET_BINARY_SIZE(&ctx->N))
+		return -1;
 	BIGNUM_FROM_ARRAY(&ctx->A, A_buf, A_buf_len);
 	if (ret != 0)
 		return -1;
@@ -683,6 +688,10 @@ void librist_crypto_srp_client_write_M1_bytes(struct librist_crypto_srp_client_c
 int librist_crypto_srp_client_handle_B(struct librist_crypto_srp_client_ctx *ctx, uint8_t *B_bytes, size_t B_len, const char *username, const char *password) {
 	int ret = 0;
 
+	/* Same operand-size bound as the authenticator side; a malicious
+	 * server otherwise drives mbedtls_mpi_exp_mod runtime via B. */
+	if (B_len == 0 || B_len > BIGNUM_GET_BINARY_SIZE(&ctx->N))
+		return -1;
 	BIGNUM_FROM_ARRAY(&ctx->B, B_bytes, B_len);
 	if (ret != 0)
 		return -1;

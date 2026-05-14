@@ -244,7 +244,8 @@ static void _librist_crypto_psk_generate_nonce(struct rist_key *key) {
 
 void _librist_crypto_psk_decrypt(struct rist_key *key, uint8_t nonce[4], uint32_t seq_nbe, uint8_t gre_version, const uint8_t inbuf[], uint8_t outbuf[], size_t payload_len)
 {
-	uint32_t nonce_val = *((uint32_t *)nonce);
+	uint32_t nonce_val;
+	memcpy(&nonce_val, nonce, sizeof(nonce_val));
     // A zero nonce never comes from a legitimate sender; refuse to decrypt
     if (!nonce_val) {
         key->bad_decryption = true;
@@ -280,7 +281,8 @@ void _librist_crypto_psk_decrypt(struct rist_key *key, uint8_t nonce[4], uint32_
 
 void _librist_crypto_psk_encrypt(struct rist_key *key, uint32_t seq_nbe, uint8_t gre_version,const uint8_t inbuf[], uint8_t outbuf[], size_t payload_len)
 {
-    uint32_t nonce_val = *((uint32_t *)key->gre_nonce);
+    uint32_t nonce_val;
+    memcpy(&nonce_val, key->gre_nonce, sizeof(nonce_val));
     if (!nonce_val || (key->used_times +1) > RIST_AES_KEY_REUSE_TIMES || (key->key_rotation > 0 && key->used_times >= key->key_rotation)) {
         _librist_crypto_psk_generate_nonce(key);
         _librist_crypto_aes_key(key);

@@ -78,6 +78,11 @@ int _librist_srp_mbedtls_wrap_random(void *unused, unsigned char * buf, size_t s
 #define BIGNUM_SUB_BIG(prod, a, b) ret = mbedtls_mpi_sub_mpi(prod, a, b)
 #define BIGNUM_EQUALS(num, comp) (mbedtls_mpi_cmp_int(num, comp) == 0)
 #define BIGNUM_WRITE_BYTES(num, bytes, bytes_size) if (mbedtls_mpi_write_binary(num, bytes, bytes_size) != 0) {return -1; }
+/* Variant that jumps to a cleanup label instead of returning, for use inside
+ * functions that own heap that needs freeing on failure. */
+#define BIGNUM_WRITE_BYTES_OR_GOTO(num, bytes, bytes_size, lbl) do { \
+	if (mbedtls_mpi_write_binary(num, bytes, bytes_size) != 0) goto lbl; \
+} while (0)
 #define BIGNUM_WRITE_BYTES_ALLOC(num, bytes_pp, len_p, lbl) do {\
 	*len_p = mbedtls_mpi_size(num); \
 	*bytes_pp = malloc(*len_p); \
@@ -118,6 +123,12 @@ void librist_crypto_srp_mbedtls_hash_init(HASH_CONTEXT *ctx, bool correct_init) 
 #define BIGNUM_SUB_BIG(prod, a, b) mpz_sub(prod, a, b)
 #define BIGNUM_EQUALS(num, comp) (mpz_cmp_ui(num, comp) == 0)
 #define BIGNUM_WRITE_BYTES(num, bytes, bytes_size) mpz_export(bytes, NULL, 1, 1, 0, 0, num)
+/* Nettle's mpz_export into a caller-provided buffer cannot fail; mirror the
+ * mbedTLS-side macro so the source compiles unchanged. */
+#define BIGNUM_WRITE_BYTES_OR_GOTO(num, bytes, bytes_size, lbl) do { \
+	(void)(lbl); \
+	mpz_export(bytes, NULL, 1, 1, 0, 0, num); \
+} while (0)
 #define BIGNUM_WRITE_BYTES_ALLOC(num, bytes_pp, len_p, lbl) do {\
 	*bytes_pp = mpz_export(NULL, len_p, 1, 1, 0, 0, num); \
 	if (!*bytes_pp) { goto lbl; } \
@@ -181,7 +192,7 @@ static int librist_crypto_srp_hash(const uint8_t *indata, size_t inlen, uint8_t 
 {
 #if HAVE_MBEDTLS
 #if !USE_SHA_RET
-	mbedtls_sha256(hash_data, salt_len + SHA256_DIGEST_LENGTH, x_hash, 0)
+	mbedtls_sha256(indata, inlen, outdata, 0);
 #else
 	return mbedtls_sha256_ret(indata, inlen, outdata, 0);
 #endif
@@ -216,9 +227,7 @@ static int librist_crypto_srp_calc_x(BIGNUM *salt, const char * username, const 
 	if (librist_crypto_srp_hash_final(&hash_ctx, &hash_data[salt_len]) != 0)
 		goto failed;
 
-	BIGNUM_WRITE_BYTES(salt, hash_data, salt_len);
-	if (ret != 0)
-		goto failed;
+	BIGNUM_WRITE_BYTES_OR_GOTO(salt, hash_data, salt_len, failed);
 
 	HASH_CONTEXT_FREE(&hash_ctx);
 
@@ -276,12 +285,18 @@ static int librist_crypto_srp_calculate_m(BIGNUM *N, BIGNUM *g, const char *I, B
 	print_hash(K, "K: ");
 #endif
 	uint8_t hash_tmp[SHA256_DIGEST_LENGTH];
+	int ret = -1;
+	HASH_CONTEXT hash_ctx;
 	{
 		uint8_t hash_N[SHA256_DIGEST_LENGTH];
 		uint8_t hash_g[SHA256_DIGEST_LENGTH];
 
-		librist_crypto_srp_hash_bignum(N, hash_N);
-		librist_crypto_srp_hash_bignum(g, hash_g);
+		/* hash_bignum returns -1 (without writing the output) when the
+		 * bignum exceeds its 1024-byte staging buffer. Bail out instead
+		 * of XOR-ing uninitialised stack into the SRP transcript. */
+		if (librist_crypto_srp_hash_bignum(N, hash_N) != 0 ||
+		    librist_crypto_srp_hash_bignum(g, hash_g) != 0)
+			return -1;
 
 		for (size_t i=0; i < sizeof(hash_tmp); i++)
 			hash_tmp[i] = hash_N[i] ^ hash_g[i];
@@ -291,9 +306,6 @@ static int librist_crypto_srp_calculate_m(BIGNUM *N, BIGNUM *g, const char *I, B
 	print_hash(hash_tmp, "XOR: ");
 #endif
 
-
-	int ret = -1;
-	HASH_CONTEXT hash_ctx;
 	HASH_CONTEXT_INIT(&hash_ctx, correct);
 
 	if (librist_crypto_srp_hash_update(&hash_ctx, hash_tmp, sizeof(hash_tmp)) != 0)
@@ -413,6 +425,8 @@ struct librist_crypto_srp_authenticator_ctx *librist_crypto_srp_authenticator_ct
 
 	BIGNUM_INIT(&ctx->A);
 	BIGNUM_INIT(&ctx->b);
+	BIGNUM_INIT(&ctx->k);
+	BIGNUM_INIT(&ctx->B);
 	return ctx;
 
 fail:
@@ -480,6 +494,11 @@ const uint8_t *librist_crypto_srp_authenticator_get_key(struct librist_crypto_sr
 //B=(kv + g^b) % N
 int librist_crypto_srp_authenticator_handle_A(struct librist_crypto_srp_authenticator_ctx *ctx, uint8_t *A_buf, size_t A_buf_len) {
 	int ret = 0;
+	/* Bound the attacker-supplied operand against N. Without this,
+	 * mbedtls_mpi_exp_mod() runs in time proportional to A_buf_len,
+	 * giving a peer-pre-auth CPU DoS handle. */
+	if (A_buf_len == 0 || A_buf_len > BIGNUM_GET_BINARY_SIZE(&ctx->N))
+		return -1;
 	BIGNUM_FROM_ARRAY(&ctx->A, A_buf, A_buf_len);
 	if (ret != 0)
 		return -1;
@@ -490,8 +509,11 @@ int librist_crypto_srp_authenticator_handle_A(struct librist_crypto_srp_authenti
 	if (ret != 0)
 		goto out;
 
-	if (BIGNUM_EQUALS(&tmp, 0))
+	// RFC 5054 / SRP-6a: server aborts if A mod N == 0
+	if (BIGNUM_EQUALS(&tmp, 0)) {
+		ret = -1;
 		goto out;
+	}
 
 
 
@@ -666,6 +688,10 @@ void librist_crypto_srp_client_write_M1_bytes(struct librist_crypto_srp_client_c
 int librist_crypto_srp_client_handle_B(struct librist_crypto_srp_client_ctx *ctx, uint8_t *B_bytes, size_t B_len, const char *username, const char *password) {
 	int ret = 0;
 
+	/* Same operand-size bound as the authenticator side; a malicious
+	 * server otherwise drives mbedtls_mpi_exp_mod runtime via B. */
+	if (B_len == 0 || B_len > BIGNUM_GET_BINARY_SIZE(&ctx->N))
+		return -1;
 	BIGNUM_FROM_ARRAY(&ctx->B, B_bytes, B_len);
 	if (ret != 0)
 		return -1;
@@ -684,13 +710,15 @@ int librist_crypto_srp_client_handle_B(struct librist_crypto_srp_client_ctx *ctx
 	BIGNUM_INIT(&tmp3);
 	BIGNUM_INIT(&tmp4);
 
-	//Safety check: exit early if B mod N equals 0
+	// RFC 5054 / SRP-6a: client aborts if B mod N == 0
 	BIGNUM_MOD_RED(&tmp1, &ctx->B, &ctx->N);
 	if (ret != 0)
 		goto out;
 
-	if (BIGNUM_EQUALS(&tmp1, 0))
+	if (BIGNUM_EQUALS(&tmp1, 0)) {
+		ret = -1;
 		goto out;
+	}
 
 	//Calculate u & execute safety check
 	{
@@ -701,13 +729,15 @@ int librist_crypto_srp_client_handle_B(struct librist_crypto_srp_client_ctx *ctx
 
 
 		BIGNUM_FROM_ARRAY(&u, u_hash, sizeof(u_hash));
-		//Safety check: exit early if u mod N equals 0
+		// And aborts if u mod N == 0
 		BIGNUM_MOD_RED(&tmp1, &u, &ctx->N);
 		if (ret != 0)
 			goto out;
 
-		if (BIGNUM_EQUALS(&tmp1, 0))
+		if (BIGNUM_EQUALS(&tmp1, 0)) {
+			ret = -1;
 			goto out;
+		}
 	}
 
 	//Calculate k
@@ -921,7 +951,7 @@ int librist_crypto_srp_create_verifier(
 	BIGNUM_FROM_STRING(&s, salt_hex);
 #else
 #if HAVE_MBEDTLS
-	mbedtls_mpi_fill_random(&s, 32, _librist_srp_mbedtls_wrap_random, NULL);
+	ret = mbedtls_mpi_fill_random(&s, 32, _librist_srp_mbedtls_wrap_random, NULL);
 #elif HAVE_NETTLE
 	nettle_mpz_random_size(&s, NULL, _librist_srp_nettle_wrap_random, 8 * 32);
 #endif
@@ -965,6 +995,10 @@ failed:
 
 	free(*bytes_s);
 	free(*bytes_v);
+	*bytes_s = NULL;
+	*bytes_v = NULL;
+	*len_s = 0;
+	*len_v = 0;
 
 	return -1;
 }

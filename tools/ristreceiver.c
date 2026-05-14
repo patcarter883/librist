@@ -35,10 +35,7 @@
 #include <sys/ioctl.h>
 #endif
 #include "yamlparse.h"
-
-#if defined(_WIN32) || defined(_WIN64)
-# define strtok_r strtok_s
-#endif
+#include "string-shim.h"
 
 #define RISTRECEIVER_VERSION "30"
 

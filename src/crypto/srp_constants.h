@@ -5,8 +5,8 @@
 #include <librist/common.h>
 typedef enum
 {
-	LIBRIST_SRP_NG_512,
-	LIBRIST_SRP_NG_768,
+    /* sub-1024-bit groups (NG_512, NG_768) were dropped: too weak to be
+     * worth keeping around now that there's a credible audience. */
     LIBRIST_SRP_NG_1024,
     LIBRIST_SRP_NG_2048,
     LIBRIST_SRP_NG_4096,

@@ -87,7 +87,7 @@ static inline void rist_log_impl(struct rist_logging_settings *log_settings,
 		fprintf(stderr, "[ERROR] Failed to format log message\n");
 		goto out;
 	}
-	if (log_settings->log_socket)
+	if (log_settings->log_socket >= 0)
 		udpsocket_send_nonblocking(log_settings->log_socket, logmsg, msglen);
 	if (log_settings->log_stream) {
 		fputs(logmsg, log_settings->log_stream);
@@ -229,6 +229,8 @@ int rist_logging_set(struct rist_logging_settings **logging_settings, enum rist_
 	bool alloc = false;
 	if (!settings) {
 		settings = malloc(sizeof(*settings));
+		if (!settings)
+			return -1;
 		*settings = (struct rist_logging_settings)
 			LOGGING_SETTINGS_INITIALIZER;
 		*logging_settings = settings;

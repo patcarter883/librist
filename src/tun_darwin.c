@@ -16,6 +16,7 @@
 #include "librist/tun.h"
 
 #include <errno.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -68,8 +69,17 @@ int rist_tun_open(const char *requested_name, char *actual_name, size_t name_len
 	 */
 	unsigned int unit = 0;
 	if (requested_name && requested_name[0]) {
-		if (strncmp(requested_name, "utun", 4) == 0)
-			unit = (unsigned int)atoi(requested_name + 4) + 1;
+		if (strncmp(requested_name, "utun", 4) == 0) {
+			const char *suffix = requested_name + 4;
+			char *endptr = NULL;
+			errno = 0;
+			unsigned long parsed = strtoul(suffix, &endptr, 10);
+			if (suffix[0] != '\0' && errno == 0 &&
+			    endptr != suffix && *endptr == '\0' &&
+			    parsed < (UINT_MAX - 1)) {
+				unit = (unsigned int)parsed + 1;
+			}
+		}
 	}
 	sc.sc_unit = unit;
 
@@ -140,6 +150,10 @@ int rist_tun_write(int fd, const uint8_t *buf, size_t len)
 
 int rist_tun_set_ip(const char *dev, const char *ip, int prefix_len)
 {
+	if (prefix_len < 0 || prefix_len > 32) {
+		fprintf(stderr, "Invalid prefix length: %d\n", prefix_len);
+		return -1;
+	}
 	struct ifaliasreq ifra;
 	memset(&ifra, 0, sizeof(ifra));
 	strncpy(ifra.ifra_name, dev, IFNAMSIZ - 1);
@@ -155,8 +169,12 @@ int rist_tun_set_ip(const char *dev, const char *ip, int prefix_len)
 	struct sockaddr_in *mask = (struct sockaddr_in *)&ifra.ifra_mask;
 	mask->sin_len = sizeof(*mask);
 	mask->sin_family = AF_INET;
-	mask->sin_addr.s_addr = prefix_len ?
-		htonl(~((1U << (32 - prefix_len)) - 1)) : 0;
+	if (prefix_len == 0)
+		mask->sin_addr.s_addr = 0;
+	else if (prefix_len == 32)
+		mask->sin_addr.s_addr = htonl(0xFFFFFFFFu);
+	else
+		mask->sin_addr.s_addr = htonl(~((1U << (32 - prefix_len)) - 1));
 
 	struct sockaddr_in *dst = (struct sockaddr_in *)&ifra.ifra_broadaddr;
 	dst->sin_len = sizeof(*dst);

@@ -220,6 +220,7 @@ void _librist_proto_gre_send_keepalive(struct rist_peer *p, uint8_t gre_version)
 }
 
 int _librist_proto_gre_parse_keepalive(const uint8_t buf[], size_t buflen, struct rist_keepalive_info  *info) {
+	memset(info, 0, sizeof(*info));
 	if (buflen < sizeof(struct rist_gre_keepalive)) {
 		return -1;
 	}

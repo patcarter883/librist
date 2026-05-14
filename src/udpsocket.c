@@ -319,8 +319,9 @@ int udpsocket_open_bind(const char *host, uint16_t port, const char *mciface)
 	}
 	if (is_multicast && udpsocket_join_mcast_group(sd, mciface, (struct sockaddr *)&raw, raw.sin6_family) != 0) {
 		rist_log_priv3( RIST_LOG_ERROR, "Could not join multicast group: %s on %s\n", host, mciface);
+		udpsocket_close(sd);
 		return -1;
-	} 
+	}
 	return sd;
 }
 
@@ -464,6 +465,7 @@ int udpsocket_parse_url(char *url, char *address, int address_maxlen, uint16_t *
 
 	if (strlen(p_addr) > 0) {
 		strncpy(address, p_addr, address_maxlen);
+		address[address_maxlen - 1] = '\0';
 	} else if ( !using_sqbrkts) {
 		sprintf(address, "0.0.0.0");
 	} else {

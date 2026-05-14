@@ -94,8 +94,14 @@ uint64_t convertRTPtoNTP(uint8_t ptype, uint32_t time_extension,
 uint64_t calculate_rtt_delay(uint64_t request, uint64_t response,
                              uint32_t delay) {
   /* both request and response are NTP timestamps, delay is in microseconds */
+  if (request > response)
+    return 0;
   uint64_t rtt = response - request;
-  if (RIST_UNLIKELY(delay))
-    rtt -= (((uint64_t)delay) << 32) / 1000000;
+  if (RIST_UNLIKELY(delay)) {
+    uint64_t delay_ticks = (((uint64_t)delay) << 32) / 1000000;
+    if (delay_ticks > rtt)
+      return 0;
+    rtt -= delay_ticks;
+  }
   return rtt;
 }

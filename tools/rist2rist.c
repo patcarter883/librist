@@ -29,6 +29,7 @@
 #include <unistd.h>
 #endif
 #include "oob_shared.h"
+#include "string-shim.h"
 
 #define RIST2RIST_VERSION "31"
 

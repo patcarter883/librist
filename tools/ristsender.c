@@ -33,9 +33,9 @@
 #include <sys/ioctl.h>
 #endif
 #include "yamlparse.h"
+#include "string-shim.h"
 
 #if defined(_WIN32) || defined(_WIN64)
-#define strtok_r strtok_s
 #define MSG_DONTWAIT (0)
 #endif
 
@@ -444,11 +444,6 @@ static struct rist_peer* setup_rist_peer(struct rist_ctx_wrap *w, struct rist_se
 			rist_log(&logging_settings, RIST_LOG_ERROR, "Could not enable out-of-band data\n");
 			return NULL;
 		}
-	}
-
-	if (rist_sender_stats_callback_set(ctx, setup->statsinterval, sender_stats_callback, NULL) == -1) {
-		rist_log(&logging_settings, RIST_LOG_ERROR, "Could not enable stats callback\n");
-		return NULL;
 	}
 
 	// Rely on the library to parse the url

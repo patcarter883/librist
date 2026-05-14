@@ -145,10 +145,15 @@ static int send_eapol_pkt(struct eapsrp_ctx *ctx, uint8_t eapoltype, uint8_t eap
 	{
 		free(ctx->last_pkt);
 		ctx->last_pkt = malloc((payload_len + EAPOL_EAP_HDRS_OFFSET));
-		memcpy(ctx->last_pkt, buf,(payload_len + EAPOL_EAP_HDRS_OFFSET));
-		ctx->last_pkt_size = (payload_len + EAPOL_EAP_HDRS_OFFSET);
-		ctx->last_timestamp = timestampNTP_u64();
-		ctx->timeout_retries = 0;
+		if (ctx->last_pkt == NULL) {
+			// OOM: skip caching the retransmit copy
+			ctx->last_pkt_size = 0;
+		} else {
+			memcpy(ctx->last_pkt, buf, (payload_len + EAPOL_EAP_HDRS_OFFSET));
+			ctx->last_pkt_size = (payload_len + EAPOL_EAP_HDRS_OFFSET);
+			ctx->last_timestamp = timestampNTP_u64();
+			ctx->timeout_retries = 0;
+		}
 	}
 	if (_librist_proto_gre_send_data(ctx->peer, 0, RIST_GRE_PROTOCOL_TYPE_EAPOL, buf, (EAPOL_EAP_HDRS_OFFSET + payload_len), 0, 0, ctx->peer->rist_gre_version) < 0)
 		return -1;
@@ -160,6 +165,12 @@ static int send_eapol_pkt(struct eapsrp_ctx *ctx, uint8_t eapoltype, uint8_t eap
 //EAP REQUEST HANDLING
 static int process_eap_request_identity(struct eapsrp_ctx *ctx, uint8_t identifier)
 {
+	/* Don't tear down an established session on a spoofed identity request:
+	 * once we're authenticated, a forged EAP_REQUEST_IDENTITY can only ask us
+	 * to start over, which is what the attacker wants.  Re-auth is driven by
+	 * the timers in eap_periodic. */
+	if (ctx->authentication_state >= EAP_AUTH_STATE_SUCCESS)
+		return EAP_UNEXPECTEDREQUEST;
 	eap_reset_data(ctx);
 	uint8_t eapolpkt[512];
 	size_t offset = EAPOL_EAP_HDRS_OFFSET;
@@ -182,18 +193,23 @@ static int process_eap_request_srp_challenge(struct eapsrp_ctx *ctx, uint8_t ide
 #elif HAVE_NETTLE
 	(void)(eap_version);
 #endif
+	// each TLV is prefixed with a 2-byte big-endian length, account for it
 	size_t offset = 0;
+	if (offset + 2 > len)
+		return EAP_LENERR;
 	uint16_t *tmp_swap = (uint16_t *)&pkt[offset];
 	size_t name_len = be16toh(*tmp_swap);
 	offset += 2;
 	//name can be ignored
+	if (name_len > len - offset)
+		return EAP_LENERR;
 	offset += name_len;
-	if (offset > len)
+	if (offset + 2 > len)
 		return EAP_LENERR;
 	tmp_swap = (uint16_t *)&pkt[offset];
 	size_t salt_len = be16toh(*tmp_swap);
 	offset += 2;
-	if (len < (offset + salt_len))
+	if (salt_len > len - offset)
 		return EAP_LENERR;
 
 	bool use_default_2048 = true;
@@ -202,12 +218,14 @@ static int process_eap_request_srp_challenge(struct eapsrp_ctx *ctx, uint8_t ide
 	uint8_t *N = NULL;
 	size_t N_len = 0;
 	offset += salt_len;
+	if (offset + 2 > len)
+		return EAP_LENERR;
 	tmp_swap = (uint16_t *)&pkt[offset];
 	size_t generator_len = be16toh(*tmp_swap);
 	offset += 2;
 	if (generator_len != 0)
 	{
-		if (len < (offset + generator_len))
+		if (generator_len > len - offset)
 			return EAP_LENERR;
 
 		g = &pkt[offset];
@@ -217,14 +235,16 @@ static int process_eap_request_srp_challenge(struct eapsrp_ctx *ctx, uint8_t ide
 	}
 	librist_crypto_srp_client_ctx_free(ctx->client_ctx);
 	ctx->client_ctx = librist_crypto_srp_client_ctx_create(use_default_2048, N, N_len, g, generator_len, salt, salt_len, ctx->eapversion3);
-	size_t len_A;
+	if (ctx->client_ctx == NULL)
+		return EAP_LENERR;
 	uint8_t response[1500] = {0};
 	struct eap_srp_hdr *hdr = (struct eap_srp_hdr *)&response[EAPOL_EAP_HDRS_OFFSET];
 	hdr->type = EAP_TYPE_SRP_SHA1;
 	hdr->subtype = EAP_SRP_SUBTYPE_CHALLENGE;
-	len_A = librist_crypto_srp_client_write_A_bytes(ctx->client_ctx, &response[EAPOL_EAP_HDRS_OFFSET + sizeof(*hdr)], sizeof(response) -(EAPOL_EAP_HDRS_OFFSET + sizeof(*hdr)));
-	int ret = send_eapol_pkt(ctx, EAPOL_TYPE_EAP, EAP_CODE_RESPONSE, identifier, (len_A + sizeof(*hdr)), response, ctx->eapversion3? 3 :2);
-	return ret;
+	int len_A = librist_crypto_srp_client_write_A_bytes(ctx->client_ctx, &response[EAPOL_EAP_HDRS_OFFSET + sizeof(*hdr)], sizeof(response) -(EAPOL_EAP_HDRS_OFFSET + sizeof(*hdr)));
+	if (len_A < 0)
+		return -1;
+	return send_eapol_pkt(ctx, EAPOL_TYPE_EAP, EAP_CODE_RESPONSE, identifier, ((size_t)len_A + sizeof(*hdr)), response, ctx->eapversion3? 3 :2);
 }
 
 static int process_eap_request_srp_server_key(struct eapsrp_ctx *ctx, uint8_t identifier, size_t len, uint8_t pkt[])
@@ -334,11 +354,15 @@ static int process_eap_request_srp_passphrase(struct eapsrp_ctx *ctx, uint8_t id
 
 static int process_eap_request(struct eapsrp_ctx *ctx, uint8_t pkt[], size_t len, uint8_t identifier, uint8_t eap_version)
 {
+	if (len < 1)
+		return EAP_LENERR;
 	uint8_t type = pkt[0];
 	if (type == EAP_TYPE_IDENTITY)
 		return process_eap_request_identity(ctx, identifier);
 	if (type == EAP_TYPE_SRP_SHA1)
 	{
+		if (len < 2)
+			return EAP_LENERR;
 		uint8_t subtype = pkt[1];
 		if (subtype != EAP_SRP_SUBTYPE_PASSWORD_REQUEST_RESPONSE && ctx->config.role == EAP_ROLE_AUTHENTICATOR)
 			return EAP_UNEXPECTEDREQUEST;
@@ -373,6 +397,10 @@ static int process_eap_response_identity(struct eapsrp_ctx *ctx, size_t len, uin
 {
 	if (len > 255)
 		return -1;
+	/* Defensive: this path expects an authenticator (with a verifier
+	 * lookup); refuse to run if either invariant is missing. */
+	if (ctx->config.role != EAP_ROLE_AUTHENTICATOR || !ctx->config.lookup_func)
+		return -1;
 	memcpy(ctx->config.username, pkt, len);
 	ctx->config.username[len] = '\0';
 #if HAVE_MBEDTLS
@@ -401,6 +429,7 @@ static int process_eap_response_identity(struct eapsrp_ctx *ctx, size_t len, uin
 	offset += sizeof(*hdr);
 	hdr->type = EAP_TYPE_SRP_SHA1;
 	hdr->subtype = EAP_SRP_SUBTYPE_CHALLENGE;
+	int rc = -1;
 	if (found)
 	{
 		struct librist_crypto_srp_authenticator_ctx *auth_ctx = NULL;
@@ -408,12 +437,11 @@ static int process_eap_response_identity(struct eapsrp_ctx *ctx, size_t len, uin
 			librist_get_ng_constants(LIBRIST_SRP_NG_DEFAULT, &n_hex, &g_hex);
 
 		auth_ctx = librist_crypto_srp_authenticator_ctx_create(n_hex, g_hex, verifier_data.verifier, verifier_data.verifier_len, verifier_data.salt, verifier_data.salt_len, ctx->eapversion3);
-		if (!auth_ctx) {
-			return -1;//Log some error?
-		}
+		if (!auth_ctx)
+			goto out;
 		librist_crypto_srp_authenticator_ctx_free(ctx->auth_ctx);
 		ctx->auth_ctx = auth_ctx;
-		memset(&pkt[offset], 0, 2);
+		memset(&outpkt[offset], 0, 2);
 		offset += 2;//we dont send the server name
 		uint16_t *tmp_swap = (uint16_t *)&outpkt[offset];
 		*tmp_swap = htobe16(verifier_data.salt_len);
@@ -429,40 +457,49 @@ static int process_eap_response_identity(struct eapsrp_ctx *ctx, size_t len, uin
 			offset += 2;
 			int g_size = librist_crypto_srp_authenticator_write_g_bytes(auth_ctx, &outpkt[offset], sizeof(outpkt) -offset);
 			if (g_size < 0)
-				return -1;
+				goto out;
 			*tmp_swap = htobe16(g_size);
 			offset += g_size;
 
 			int n_len = librist_crypto_srp_authenticator_write_n_bytes(auth_ctx, &outpkt[offset], sizeof(outpkt) -offset);
 			if (n_len < 0)
-				return -1;
+				goto out;
 			offset += n_len;
 		}
+		ctx->last_identifier++;
+		size_t out_len = offset - EAPOL_EAP_HDRS_OFFSET;
+		rc = send_eapol_pkt(ctx, EAPOL_TYPE_EAP, EAP_CODE_REQUEST, ctx->last_identifier, out_len, outpkt, ctx->eapversion3? 3 :2);
 	}
+out:
 	free(verifier_data.verifier);
 	free(verifier_data.salt);
 	free(verifier_data.generator_ascii);
 	free(verifier_data.n_modulus_ascii);
-	if (!found)
-		return -1;
-	ctx->last_identifier++;
-	size_t out_len = offset;
-	out_len -= EAPOL_EAP_HDRS_OFFSET;
-	return send_eapol_pkt(ctx, EAPOL_TYPE_EAP, EAP_CODE_REQUEST, ctx->last_identifier, out_len, outpkt, ctx->eapversion3? 3 :2);
+	return rc;
 }
 
 static int process_eap_response_client_key(struct eapsrp_ctx *ctx, size_t len, uint8_t pkt[])
 {
-	librist_crypto_srp_authenticator_handle_A(ctx->auth_ctx, pkt, len);
+	if (!ctx->auth_ctx) {
+		ctx->authentication_state = EAP_AUTH_STATE_FAILED;
+		return -254;
+	}
+
+	if (librist_crypto_srp_authenticator_handle_A(ctx->auth_ctx, pkt, len) != 0) {
+		ctx->authentication_state = EAP_AUTH_STATE_FAILED;
+		ctx->tries = 255;
+		return -255;
+	}
 
 	uint8_t outpkt[1500];
 	struct eap_srp_hdr *hdr = (struct eap_srp_hdr *)&outpkt[EAPOL_EAP_HDRS_OFFSET];
 	hdr->type = EAP_TYPE_SRP_SHA1;
 	hdr->subtype = EAP_SRP_SUBTYPE_SERVER_KEY;
-	size_t len_B = librist_crypto_srp_authenticator_write_B_bytes(ctx->auth_ctx, &outpkt[(EAPOL_EAP_HDRS_OFFSET + sizeof(*hdr))], sizeof(outpkt) - (EAPOL_EAP_HDRS_OFFSET + sizeof(*hdr)));
+	int len_B = librist_crypto_srp_authenticator_write_B_bytes(ctx->auth_ctx, &outpkt[(EAPOL_EAP_HDRS_OFFSET + sizeof(*hdr))], sizeof(outpkt) - (EAPOL_EAP_HDRS_OFFSET + sizeof(*hdr)));
+	if (len_B < 0)
+		return -1;
 	ctx->last_identifier++;
-	int ret = send_eapol_pkt(ctx, EAPOL_TYPE_EAP, EAP_CODE_REQUEST, ctx->last_identifier, (sizeof(struct eap_srp_hdr) + len_B), outpkt, ctx->eapversion3? 3 :2);
-	return ret;
+	return send_eapol_pkt(ctx, EAPOL_TYPE_EAP, EAP_CODE_REQUEST, ctx->last_identifier, (sizeof(struct eap_srp_hdr) + (size_t)len_B), outpkt, ctx->eapversion3? 3 :2);
 }
 
 static int process_eap_response_client_validator(struct eapsrp_ctx *ctx, size_t len, uint8_t pkt[])
@@ -532,6 +569,9 @@ static int process_eap_response_passphrase(struct eapsrp_ctx *ctx, uint8_t ident
 	if (ctx->authentication_state != EAP_AUTH_STATE_SUCCESS)//We cannot process it now,
 		return 0;
 
+	// Need at least the flags byte (also avoids (len-1) underflow below)
+	if (len < 1)
+		return EAP_LENERR;
 	bool use_derived_key = CHECK_BIT(pkt[0], 7);
 	const uint8_t *key = NULL;
 	if (ctx->config.role == EAP_ROLE_AUTHENTICATOR)
@@ -572,18 +612,28 @@ static int eap_request_passphrase(struct eapsrp_ctx *ctx, bool start) {
 
 static int process_eap_response(struct eapsrp_ctx *ctx, uint8_t pkt[], size_t len, uint8_t identifier, uint8_t eap_version)
 {
+	if (len < 1)
+		return EAP_LENERR;
 	uint8_t type = pkt[0];
 	ctx->timeout_retries = 0;
 	free(ctx->last_pkt);
 	ctx->last_pkt_size = 0;
 	ctx->last_pkt = NULL;
 	if (type == EAP_TYPE_IDENTITY) {
+		/* Only an authenticator should ever process IDENTITY RESPONSE; on the
+		 * authenticatee side ctx->config.lookup_func is NULL (set up via
+		 * calloc + role/username/password assignment in rist_enable_eap_srp_2)
+		 * and process_eap_response_identity would dereference it. */
+		if (ctx->config.role != EAP_ROLE_AUTHENTICATOR || !ctx->config.lookup_func)
+			return EAP_UNEXPECTEDRESPONSE;
 		if (identifier != ctx->last_identifier)
 			return EAP_WRONGIDENTIFIER;
 		return process_eap_response_identity(ctx, (len -1), &pkt[1], eap_version);
 	}
 	if (type == EAP_TYPE_SRP_SHA1)
 	{
+		if (len < 2)
+			return EAP_LENERR;
 		uint8_t subtype = pkt[1];
 
 		if (subtype != EAP_SRP_SUBTYPE_PASSWORD_REQUEST_RESPONSE && ctx->config.role == EAP_ROLE_AUTHENTICATEE)
@@ -636,6 +686,8 @@ static int process_eap_pkt(struct eapsrp_ctx *ctx, uint8_t pkt[], size_t len, ui
 		return -1;
 	if (ctx->authentication_state == EAP_AUTH_STATE_FAILED && ctx->tries >EAP_AUTH_RETRY_MAX)
 		return -255;
+	if (len < sizeof(struct eap_hdr))
+		return EAP_LENERR;
 	struct eap_hdr *hdr = (struct eap_hdr *)pkt;
 	uint8_t code = hdr->code;
 	uint8_t identifier = hdr->identifier;
@@ -655,8 +707,14 @@ static int process_eap_pkt(struct eapsrp_ctx *ctx, uint8_t pkt[], size_t len, ui
 			return process_eap_succes(ctx, identifier);
 			break;
 		case EAP_CODE_FAILURE:
+			// rate-limit, otherwise a spoofed FAILURE can loop us forever
+			ctx->tries++;
 			eap_reset_data(ctx);
 			rist_log_priv2(ctx->config.logging_settings, RIST_LOG_ERROR, EAP_LOG_PREFIX"Authentication failed\n");
+			if (ctx->tries > EAP_AUTH_RETRY_MAX) {
+				ctx->authentication_state = EAP_AUTH_STATE_FAILED;
+				return -255;
+			}
 			return _librist_proto_eap_start(ctx);//try to restart the process
 		default:
 			return -1;
@@ -701,8 +759,10 @@ int eap_clone_ctx(struct eapsrp_ctx *in, struct rist_peer *peer)
 	if (!ctx)
 		return -1;
 
-	if (pthread_mutex_init(&ctx->eap_lock, NULL) != 0)
+	if (pthread_mutex_init(&ctx->eap_lock, NULL) != 0) {
+		free(ctx);
 		return -1;
+	}
     memcpy(&ctx->config, &in->config, sizeof(in->config));
 	peer->eap_ctx = ctx;
 	ctx->peer = peer;
@@ -725,10 +785,13 @@ void eap_delete_ctx(struct eapsrp_ctx **in)
 int eap_process_eapol(struct eapsrp_ctx* ctx, uint8_t pkt[], size_t len)
 {
 	assert(ctx != NULL);
+	if (len < sizeof(struct eapol_hdr))
+		return EAP_LENERR;
 	struct eapol_hdr *hdr = (struct eapol_hdr *)pkt;
 	uint8_t eap_version = hdr->eapversion;
 	size_t body_len = be16toh(hdr->length);
-	if ((body_len +4) < (len))
+	// the on-the-wire body_len must fit inside what we actually received
+	if (body_len + sizeof(struct eapol_hdr) > len)
 		return EAP_LENERR;
 
 	pthread_mutex_lock(&ctx->eap_lock);
@@ -874,6 +937,8 @@ static void internal_user_verifier_lookup(char * username,
 #if HAVE_MBEDTLS
 		decoded_verifier = malloc(ctx->authenticator_len_verifier_old);
 		decoded_salt = malloc(ctx->authenticator_len_salt_old);
+		if (!decoded_verifier || !decoded_salt)
+			goto fail_decode;
 		memcpy(decoded_verifier, ctx->authenticator_bytes_verifier_old, ctx->authenticator_len_verifier_old);
 		memcpy(decoded_salt, ctx->authenticator_bytes_salt_old, ctx->authenticator_len_salt_old);
 		lookup_data->verifier_len = ctx->authenticator_len_verifier_old;
@@ -882,6 +947,8 @@ static void internal_user_verifier_lookup(char * username,
 	} else {
 		decoded_verifier = malloc(ctx->authenticator_len_verifier);
 		decoded_salt = malloc(ctx->authenticator_len_salt);
+		if (!decoded_verifier || !decoded_salt)
+			goto fail_decode;
 		memcpy(decoded_verifier, ctx->authenticator_bytes_verifier, ctx->authenticator_len_verifier);
 		memcpy(decoded_salt, ctx->authenticator_bytes_salt, ctx->authenticator_len_salt);
 		lookup_data->verifier_len = ctx->authenticator_len_verifier;
@@ -924,9 +991,9 @@ int rist_enable_eap_srp_2(struct rist_peer *peer, const char *username, const ch
 	if ((peer->listening && !peer->multicast_receiver) || peer->multicast_sender)
 	{
 		struct eapsrp_ctx *ctx = calloc(1, sizeof(*ctx));
-		ctx->config.logging_settings = get_cctx(peer)->logging_settings;
 		if (ctx == NULL)
 			return RIST_ERR_MALLOC;
+		ctx->config.logging_settings = get_cctx(peer)->logging_settings;
 		if (pthread_mutex_init(&ctx->eap_lock, NULL) != 0) {
 			free(ctx);
 			return RIST_ERR_MALLOC;
@@ -1036,8 +1103,16 @@ bool rist_eap_may_rollover_tx(struct eapsrp_ctx *ctx) {
 
 void rist_eap_send_passphrase(struct eapsrp_ctx *ctx, const char *passphrase) {
 	pthread_mutex_lock(&ctx->eap_lock);
-	ctx->unsollicited_passphrase_len = strlen(passphrase);
-	memcpy(ctx->unsollicited_passphrase, passphrase, ctx->unsollicited_passphrase_len);
+	size_t plen = strlen(passphrase);
+	if (plen > sizeof(ctx->unsollicited_passphrase)) {
+		rist_log_priv2(ctx->config.logging_settings, RIST_LOG_ERROR,
+			EAP_LOG_PREFIX"Passphrase too long (%zu > %zu), dropping\n",
+			plen, sizeof(ctx->unsollicited_passphrase));
+		pthread_mutex_unlock(&ctx->eap_lock);
+		return;
+	}
+	ctx->unsollicited_passphrase_len = plen;
+	memcpy(ctx->unsollicited_passphrase, passphrase, plen);
 	ctx->unsollicited_passphrase_response_timer = timestampNTP_u64();
 	ctx->unsollicited_passphrase_response_times = 1;
 	ctx->unsollicited_passphrase_response_identifier++;

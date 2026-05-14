@@ -1157,7 +1157,7 @@ static PTHREAD_START_FUNC(sender_data_fd_read_loop, arg)
 	const size_t bufsize = ctx->data_fd_max_packet_size > 0 ? ctx->data_fd_max_packet_size : 1500;
 	uint8_t *buf = malloc(bufsize);
 	if (!buf)
-		return NULL;
+		return 0;
 
 	const bool is_tun = (ctx->data_fd_flags & RIST_DATA_FD_FLAG_TUN) != 0;
 
@@ -1191,7 +1191,7 @@ static PTHREAD_START_FUNC(sender_data_fd_read_loop, arg)
 	}
 
 	free(buf);
-	return NULL;
+	return 0;
 }
 
 static int rist_sender_start(struct rist_sender *ctx)

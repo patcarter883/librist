@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD-2-Clause
 
 project('libRIST', 'c',
-	version: '0.2.14',
+	version: '0.2.15',
 	default_options: ['c_std=c99', 'warning_level=3', 'libdir=lib'],
         meson_version: '>= 0.51.0')
 
@@ -18,7 +18,7 @@ cdata = configuration_data()
 #If any interfaces have been added since the last public release, then increment age.
 #If any interfaces have been removed or changed since the last public release, then set age to 0.
 librist_abi_current = 10
-librist_abi_revision = 2
+librist_abi_revision = 3
 librist_abi_age = 6
 librist_soversion = librist_abi_current - librist_abi_age
 librist_version = '@0@.@1@.@2@'.format(librist_abi_current - librist_abi_age, librist_abi_age, librist_abi_revision)
@@ -105,15 +105,16 @@ windows_version_test = '''
 			threads = dependency('threads')
 			deps += threads
 			cdata.set('HAVE_PTHREADS', 1)
-			# Use has_header_symbol so mingw-w64's static inline clock_gettime
-			# (declared in <pthread_time.h> pulled in by <time.h>) is detected.
-			# has_function does a linker test and would miss it because
-			# winpthreads only exports clock_gettime32/clock_gettime64.
-			have_clock_gettime = cc.has_header_symbol('time.h', 'clock_gettime', args : test_args)
 		endif
 	else
 		have_pthreads = false
 	endif
+	# Use has_header_symbol so mingw-w64's static inline clock_gettime
+	# (in <time.h>, regardless of winpthreads) is detected.
+	# Must stay outside the have_mingw_pthreads block: modern mingw-w64
+	# ships the inline unconditionally and contrib/time-shim.c must
+	# not redefine it.
+	have_clock_gettime = cc.has_header_symbol('time.h', 'clock_gettime', args : test_args)
 	if cc.get_id() == 'msvc'
 		# librist uses C11 features (stdatomic.h, mixed declarations).
 		# MSVC only exposes them under /std:c11 or /std:c17.
@@ -306,11 +307,12 @@ endif
 
 have_srp = mbedcrypto_lib_found or use_gnutls
 
+platform_files += 'src/crypto/random.c'
+
 if have_srp
     platform_files += 'src/proto/eap.c'
 	platform_files += 'src/crypto/srp_constants.c'
 	platform_files += 'src/crypto/srp.c'
-	platform_files += 'src/crypto/random.c'
 endif
 
 cdata.set10('HAVE_MBEDTLS', mbedcrypto_lib_found)

@@ -61,10 +61,19 @@ struct srp_test_state {
 	struct librist_crypto_srp_client_ctx *correct_hash_client;
 };
 
+/* The deterministic test exchange uses the (deprecated) 512-bit RFC 5054
+ * group inlined here. It is intentionally not selectable through the
+ * public librist_srp_ng_e enum any more. */
+static const char SRP_TEST_N_512[] =
+	"D66AAFE8E245F9AC245A199F62CE61AB8FA90A4D80C71CD2ADFD0B9DA163B29F2A34AFBDB3B"
+	"1B5D0102559CE63D8B6E86B0AA59C14E79D4AA62D1748E4249DF3";
+static const char SRP_TEST_G_512[] = "2";
+
 static int srp_test_state_setup(void **state) {
 	*state = calloc(sizeof(struct srp_test_state), 1);
 	struct srp_test_state *s = *state;
-	librist_get_ng_constants(LIBRIST_SRP_NG_512, &s->n, &s->g);
+	s->n = SRP_TEST_N_512;
+	s->g = SRP_TEST_G_512;
 #if HAVE_MBEDTLS
 	librist_crypto_srp_create_verifier(s->n, s->g, "rist", "mainprofile", &s->salt, &s->salt_len, &s->incorrect_hash_verifier, &s->verifier_len, false);
 	s->wrong_hash_authenticator = librist_crypto_srp_authenticator_ctx_create(s->n, s->g, s->incorrect_hash_verifier, s->verifier_len, s->salt, s->salt_len, false);
@@ -145,13 +154,6 @@ static void test_get_default_ng(void **state) {
 		"FBB694B5C803D89F7AE435DE236D525F54759B65E372FCD68EF20FA7111F9E4AFF73"
 	);
    	assert_string_equal(g, "2");
-
-	//This N,g pair is used in the VSF example flow.
-	n = NULL;
-	g = NULL;
-	assert_int_equal(librist_get_ng_constants(LIBRIST_SRP_NG_512, &n, &g), 0);
-	assert_string_equal(n, "D66AAFE8E245F9AC245A199F62CE61AB8FA90A4D80C71CD2ADFD0B9DA163B29F2A34AFBDB3B1B5D0102559CE63D8B6E86B0AA59C14E79D4AA62D1748E4249DF3");
-	assert_string_equal(g, "2");
 }
 
 #if HAVE_MBEDTLS

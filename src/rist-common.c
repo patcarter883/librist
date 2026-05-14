@@ -2351,10 +2351,27 @@ static void rist_peer_sockerr(struct evsocket_ctx *evctx, int fd, short revents,
 	RIST_MARK_UNUSED(revents);
 	struct rist_peer *peer = (struct rist_peer *) arg;
 #ifdef _WIN32
-	if (WSAGetLastError() == WSAECONNRESET) {
-		//recvfrom clears the WSAECONNRESET error
-		recvfrom(peer->sd, NULL, 0, 0, NULL, 0);
-		return;
+	{
+		/* On Windows, WSAPoll reports POLLHUP on a UDP socket when an ICMP
+		 * port-unreachable reply arrives (WSAECONNRESET). This error is stored
+		 * as a synthetic error indication in the socket's receive queue, not in
+		 * SO_ERROR. WSAGetLastError() holds the value at the time of the event,
+		 * but may be overwritten by concurrent socket operations on other peers.
+		 * Strategy:
+		 *   1. Capture WSAGetLastError() before any further WSA call.
+		 *   2. Call recvfrom() with a real buffer. For a pending WSAECONNRESET,
+		 *      recvfrom() returns SOCKET_ERROR and clears the indication without
+		 *      consuming real data (the error indicator sits ahead of data in the
+		 *      queue). After recvfrom(), WSAGetLastError() reflects the socket error.
+		 *   3. Suppress the log if either value is WSAECONNRESET; RIST detects
+		 *      peer loss via RTCP keepalive timeouts anyway. */
+		int wsa_err = WSAGetLastError();
+		char drain[1];
+		struct sockaddr_storage sa;
+		socklen_t salen = (socklen_t)sizeof(sa);
+		recvfrom(peer->sd, drain, sizeof(drain), 0, (struct sockaddr *)&sa, &salen);
+		if (wsa_err == WSAECONNRESET || WSAGetLastError() == WSAECONNRESET)
+			return;
 	}
 #endif
 	rist_log_priv(get_cctx(peer), RIST_LOG_ERROR, "\tSocket error!\n");

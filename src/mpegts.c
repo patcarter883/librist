@@ -60,12 +60,16 @@ fail:
 int expand_null_packets(uint8_t payload_in[], uint8_t payload_out[], size_t *payload_len, uint8_t npd_bits) {
 	size_t packet_size = CHECK_BIT(npd_bits, 7) == 0? 188: 204;
 
-	// Non-null data 
+	// Non-null data
 	int ts_count = (int)(*payload_len / packet_size);
 	// Null packets defined in header
 	int null_count = CHECK_BIT(npd_bits, 6) + CHECK_BIT(npd_bits, 5) + CHECK_BIT(npd_bits, 4) + CHECK_BIT(npd_bits, 3) + CHECK_BIT(npd_bits, 2) + CHECK_BIT(npd_bits, 1) + CHECK_BIT(npd_bits, 0);
 
 	if (null_count == 0)
+		return 0;
+
+	// npd_bits only encodes 7 positions; mirror suppress_null_packets()'s upper bound
+	if ((ts_count + null_count) > 7)
 		return 0;
 
 	size_t offset = 0;

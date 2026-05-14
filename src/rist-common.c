@@ -518,7 +518,9 @@ static inline void receiver_mark_missing(struct rist_flow *f, struct rist_peer *
 
 int compare(const void *a, const void *b)
 {
-	return ( *(uint64_t*)a < *(uint64_t*)b);
+	uint64_t ua = *(const uint64_t *)a;
+	uint64_t ub = *(const uint64_t *)b;
+	return (ua > ub) - (ua < ub);
 }
 
 static void recalculate_clock_offset(struct rist_flow *flow)

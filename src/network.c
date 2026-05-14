@@ -24,10 +24,15 @@ int _librist_network_get_macaddr(uint8_t mac[]) {
 #ifndef _WIN32
 #if defined(__GNU__)
   int sock = socket(PF_INET, SOCK_DGRAM, 0);
+  if (sock < 0)
+    return -1;
 #endif
   struct ifaddrs *ifaddr = NULL;
   struct ifaddrs *ifa = NULL;
   if (getifaddrs(&ifaddr) == -1) {
+#if defined(__GNU__)
+    close(sock);
+#endif
     return -1;
   } else {
     for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {

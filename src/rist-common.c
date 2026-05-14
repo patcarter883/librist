@@ -533,7 +533,7 @@ static void recalculate_clock_offset(struct rist_flow *flow)
 	   packets. Every "correctly" (in-order, no-discontinuities) packet's clock offset
 	   is inserted into an array. Of which we will take the median. */
 	qsort(flow->offset_recalc_samples, flow->offset_recalc_sample_count, sizeof(uint64_t), compare);
-	size_t middle = (flow->offset_recalc_sample_count +1)/2 +1;
+	size_t middle = flow->offset_recalc_sample_count / 2;
 	uint64_t median_offset = flow->offset_recalc_samples[middle];
 	flow->offset_recalc_sample_count = 0;
 	uint64_t diff = 0;

@@ -165,6 +165,12 @@ static int send_eapol_pkt(struct eapsrp_ctx *ctx, uint8_t eapoltype, uint8_t eap
 //EAP REQUEST HANDLING
 static int process_eap_request_identity(struct eapsrp_ctx *ctx, uint8_t identifier)
 {
+	/* Don't tear down an established session on a spoofed identity request:
+	 * once we're authenticated, a forged EAP_REQUEST_IDENTITY can only ask us
+	 * to start over, which is what the attacker wants.  Re-auth is driven by
+	 * the timers in eap_periodic. */
+	if (ctx->authentication_state >= EAP_AUTH_STATE_SUCCESS)
+		return EAP_UNEXPECTEDREQUEST;
 	eap_reset_data(ctx);
 	uint8_t eapolpkt[512];
 	size_t offset = EAPOL_EAP_HDRS_OFFSET;

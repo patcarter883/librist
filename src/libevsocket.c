@@ -94,7 +94,8 @@ static void ctx_del(struct evsocket_ctx *delme)
 			if (p) {
 				p->next = c->next;
 			} else {
-				CTX_LIST = NULL;
+				// removing the head: promote c->next, do not clear CTX_LIST
+				CTX_LIST = c->next;
 			}
 			goto out;
 		}

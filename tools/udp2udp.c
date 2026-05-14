@@ -342,6 +342,13 @@ int main(int argc, char *argv[])
 			rist_log(log_ptr, RIST_LOG_ERROR, "Failed to setup Metrics output\n");
 			exit(1);
 		}
+		/* udp2udp is a plain UDP relay; it doesn't run any RIST
+		 * sender or receiver and therefore never feeds the Prometheus
+		 * exporter. Make that clear so users don't expect rist_*
+		 * series to show up at the scrape endpoint. */
+		rist_log(log_ptr, RIST_LOG_WARN,
+			"udp2udp does not produce RIST traffic, so no rist_* metrics will be exported. "
+			"Use ristsender/ristreceiver for end-to-end RIST stats.\n");
 	}
 #endif
 

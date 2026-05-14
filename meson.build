@@ -105,15 +105,16 @@ windows_version_test = '''
 			threads = dependency('threads')
 			deps += threads
 			cdata.set('HAVE_PTHREADS', 1)
-			# Use has_header_symbol so mingw-w64's static inline clock_gettime
-			# (declared in <pthread_time.h> pulled in by <time.h>) is detected.
-			# has_function does a linker test and would miss it because
-			# winpthreads only exports clock_gettime32/clock_gettime64.
-			have_clock_gettime = cc.has_header_symbol('time.h', 'clock_gettime', args : test_args)
 		endif
 	else
 		have_pthreads = false
 	endif
+	# Use has_header_symbol so mingw-w64's static inline clock_gettime
+	# (in <time.h>, regardless of winpthreads) is detected.
+	# Must stay outside the have_mingw_pthreads block: modern mingw-w64
+	# ships the inline unconditionally and contrib/time-shim.c must
+	# not redefine it.
+	have_clock_gettime = cc.has_header_symbol('time.h', 'clock_gettime', args : test_args)
 	if cc.get_id() == 'msvc'
 		# librist uses C11 features (stdatomic.h, mixed declarations).
 		# MSVC only exposes them under /std:c11 or /std:c17.

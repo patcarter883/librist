@@ -285,12 +285,18 @@ static int librist_crypto_srp_calculate_m(BIGNUM *N, BIGNUM *g, const char *I, B
 	print_hash(K, "K: ");
 #endif
 	uint8_t hash_tmp[SHA256_DIGEST_LENGTH];
+	int ret = -1;
+	HASH_CONTEXT hash_ctx;
 	{
 		uint8_t hash_N[SHA256_DIGEST_LENGTH];
 		uint8_t hash_g[SHA256_DIGEST_LENGTH];
 
-		librist_crypto_srp_hash_bignum(N, hash_N);
-		librist_crypto_srp_hash_bignum(g, hash_g);
+		/* hash_bignum returns -1 (without writing the output) when the
+		 * bignum exceeds its 1024-byte staging buffer. Bail out instead
+		 * of XOR-ing uninitialised stack into the SRP transcript. */
+		if (librist_crypto_srp_hash_bignum(N, hash_N) != 0 ||
+		    librist_crypto_srp_hash_bignum(g, hash_g) != 0)
+			return -1;
 
 		for (size_t i=0; i < sizeof(hash_tmp); i++)
 			hash_tmp[i] = hash_N[i] ^ hash_g[i];
@@ -300,9 +306,6 @@ static int librist_crypto_srp_calculate_m(BIGNUM *N, BIGNUM *g, const char *I, B
 	print_hash(hash_tmp, "XOR: ");
 #endif
 
-
-	int ret = -1;
-	HASH_CONTEXT hash_ctx;
 	HASH_CONTEXT_INIT(&hash_ctx, correct);
 
 	if (librist_crypto_srp_hash_update(&hash_ctx, hash_tmp, sizeof(hash_tmp)) != 0)

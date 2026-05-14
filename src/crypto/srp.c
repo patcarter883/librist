@@ -490,8 +490,11 @@ int librist_crypto_srp_authenticator_handle_A(struct librist_crypto_srp_authenti
 	if (ret != 0)
 		goto out;
 
-	if (BIGNUM_EQUALS(&tmp, 0))
+	// RFC 5054 / SRP-6a: server aborts if A mod N == 0
+	if (BIGNUM_EQUALS(&tmp, 0)) {
+		ret = -1;
 		goto out;
+	}
 
 
 
@@ -684,13 +687,15 @@ int librist_crypto_srp_client_handle_B(struct librist_crypto_srp_client_ctx *ctx
 	BIGNUM_INIT(&tmp3);
 	BIGNUM_INIT(&tmp4);
 
-	//Safety check: exit early if B mod N equals 0
+	// RFC 5054 / SRP-6a: client aborts if B mod N == 0
 	BIGNUM_MOD_RED(&tmp1, &ctx->B, &ctx->N);
 	if (ret != 0)
 		goto out;
 
-	if (BIGNUM_EQUALS(&tmp1, 0))
+	if (BIGNUM_EQUALS(&tmp1, 0)) {
+		ret = -1;
 		goto out;
+	}
 
 	//Calculate u & execute safety check
 	{
@@ -701,13 +706,15 @@ int librist_crypto_srp_client_handle_B(struct librist_crypto_srp_client_ctx *ctx
 
 
 		BIGNUM_FROM_ARRAY(&u, u_hash, sizeof(u_hash));
-		//Safety check: exit early if u mod N equals 0
+		// And aborts if u mod N == 0
 		BIGNUM_MOD_RED(&tmp1, &u, &ctx->N);
 		if (ret != 0)
 			goto out;
 
-		if (BIGNUM_EQUALS(&tmp1, 0))
+		if (BIGNUM_EQUALS(&tmp1, 0)) {
+			ret = -1;
 			goto out;
+		}
 	}
 
 	//Calculate k

@@ -650,7 +650,12 @@ int rist_sender_enqueue(struct rist_sender *ctx, const void *data, size_t len, u
 	}
 
 	ctx->last_datagram_time = datagram_time;
-	uint8_t tmp_buf[6 * 204 + 4];//Max size needed with at least 1 pkt suppressed
+	/* Worst-case write into payload_out is (count - 1) * 204 = 6 * 204 = 1224
+	 * bytes (if exactly one of the seven 204-byte packets is suppressed),
+	 * sitting after the 8-byte rist_rtp_hdr_ext at offset 0. The previous
+	 * sizing of 6 * 204 + 4 was 4 bytes short and let suppress_null_packets
+	 * smash four bytes of stack past tmp_buf. */
+	uint8_t tmp_buf[7 * 204 + sizeof(struct rist_rtp_hdr_ext)];
 	int ts_null_bytes = 0;
 	if (ctx->null_packet_suppression && len <= 7 * 204)
 	{

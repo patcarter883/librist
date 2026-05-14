@@ -429,6 +429,7 @@ static int process_eap_response_identity(struct eapsrp_ctx *ctx, size_t len, uin
 	offset += sizeof(*hdr);
 	hdr->type = EAP_TYPE_SRP_SHA1;
 	hdr->subtype = EAP_SRP_SUBTYPE_CHALLENGE;
+	int rc = -1;
 	if (found)
 	{
 		struct librist_crypto_srp_authenticator_ctx *auth_ctx = NULL;
@@ -436,9 +437,8 @@ static int process_eap_response_identity(struct eapsrp_ctx *ctx, size_t len, uin
 			librist_get_ng_constants(LIBRIST_SRP_NG_DEFAULT, &n_hex, &g_hex);
 
 		auth_ctx = librist_crypto_srp_authenticator_ctx_create(n_hex, g_hex, verifier_data.verifier, verifier_data.verifier_len, verifier_data.salt, verifier_data.salt_len, ctx->eapversion3);
-		if (!auth_ctx) {
-			return -1;//Log some error?
-		}
+		if (!auth_ctx)
+			goto out;
 		librist_crypto_srp_authenticator_ctx_free(ctx->auth_ctx);
 		ctx->auth_ctx = auth_ctx;
 		memset(&outpkt[offset], 0, 2);
@@ -457,26 +457,25 @@ static int process_eap_response_identity(struct eapsrp_ctx *ctx, size_t len, uin
 			offset += 2;
 			int g_size = librist_crypto_srp_authenticator_write_g_bytes(auth_ctx, &outpkt[offset], sizeof(outpkt) -offset);
 			if (g_size < 0)
-				return -1;
+				goto out;
 			*tmp_swap = htobe16(g_size);
 			offset += g_size;
 
 			int n_len = librist_crypto_srp_authenticator_write_n_bytes(auth_ctx, &outpkt[offset], sizeof(outpkt) -offset);
 			if (n_len < 0)
-				return -1;
+				goto out;
 			offset += n_len;
 		}
+		ctx->last_identifier++;
+		size_t out_len = offset - EAPOL_EAP_HDRS_OFFSET;
+		rc = send_eapol_pkt(ctx, EAPOL_TYPE_EAP, EAP_CODE_REQUEST, ctx->last_identifier, out_len, outpkt, ctx->eapversion3? 3 :2);
 	}
+out:
 	free(verifier_data.verifier);
 	free(verifier_data.salt);
 	free(verifier_data.generator_ascii);
 	free(verifier_data.n_modulus_ascii);
-	if (!found)
-		return -1;
-	ctx->last_identifier++;
-	size_t out_len = offset;
-	out_len -= EAPOL_EAP_HDRS_OFFSET;
-	return send_eapol_pkt(ctx, EAPOL_TYPE_EAP, EAP_CODE_REQUEST, ctx->last_identifier, out_len, outpkt, ctx->eapversion3? 3 :2);
+	return rc;
 }
 
 static int process_eap_response_client_key(struct eapsrp_ctx *ctx, size_t len, uint8_t pkt[])

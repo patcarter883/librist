@@ -951,7 +951,7 @@ int librist_crypto_srp_create_verifier(
 	BIGNUM_FROM_STRING(&s, salt_hex);
 #else
 #if HAVE_MBEDTLS
-	mbedtls_mpi_fill_random(&s, 32, _librist_srp_mbedtls_wrap_random, NULL);
+	ret = mbedtls_mpi_fill_random(&s, 32, _librist_srp_mbedtls_wrap_random, NULL);
 #elif HAVE_NETTLE
 	nettle_mpz_random_size(&s, NULL, _librist_srp_nettle_wrap_random, 8 * 32);
 #endif

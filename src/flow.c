@@ -15,6 +15,8 @@
 void rist_receiver_missing(struct rist_flow *f, struct rist_peer *peer,uint64_t nack_time, uint32_t seq, uint64_t rtt)
 {
 	struct rist_missing_buffer *m = calloc(1, sizeof(*m));
+	if (!m)
+		return;
 	uint64_t now = timestampNTP_u64();
 	if (nack_time > now)
 		nack_time = now;
@@ -288,7 +290,7 @@ int rist_receiver_associate_flow(struct rist_peer *p, uint32_t flow_id)
 		/* double check that this peer is not a member of this flow already */
 		if (flow_has_peer(f, flow_id, p->adv_peer_id)) {
 			rist_log_priv(&ctx->common, RIST_LOG_INFO, "FLOW #%"PRIu32", Existing peer (id=%"PRIu32") re-joining existing flow ...\n",
-				flow_id, p);
+				flow_id, p->adv_peer_id);
 			ret = 2;
 		} else {
 			rist_log_priv(&ctx->common, RIST_LOG_INFO, "FLOW #%"PRIu32": New peer (id=%u) joining existing flow ...\n",
@@ -324,16 +326,23 @@ int rist_receiver_associate_flow(struct rist_peer *p, uint32_t flow_id)
 	p->adv_flow_id = flow_id;
 	if (ret == 1) {
 		// TODO: lock the list?
-		f->peer_lst = realloc(f->peer_lst, (f->peer_lst_len + 1) * sizeof(*f->peer_lst));
+		struct rist_peer **new_lst = realloc(f->peer_lst, (f->peer_lst_len + 1) * sizeof(*f->peer_lst));
+		if (!new_lst) {
+			rist_log_priv(&ctx->common, RIST_LOG_ERROR,
+				"OOM growing flow peer list, dropping new peer\n");
+			p->flow = NULL;
+			return -1;
+		}
+		f->peer_lst = new_lst;
 		f->peer_lst[f->peer_lst_len] = p;
 		f->peer_lst_len++;
 	}
 
 	rist_log_priv(&ctx->common, RIST_LOG_INFO,
-		"Peer with id #%u associated with flow #%" PRIu64 "\n", p->adv_peer_id, flow_id);
+		"Peer with id #%u associated with flow #%" PRIu32 "\n", p->adv_peer_id, flow_id);
 
 	rist_log_priv(&ctx->common, RIST_LOG_INFO,
-		"Flow #%" PRIu64 " has now %d peers.\n", flow_id, f->peer_lst_len);
+		"Flow #%" PRIu32 " has now %zu peers.\n", flow_id, f->peer_lst_len);
 
 	return ret;
 }

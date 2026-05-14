@@ -229,6 +229,8 @@ int rist_logging_set(struct rist_logging_settings **logging_settings, enum rist_
 	bool alloc = false;
 	if (!settings) {
 		settings = malloc(sizeof(*settings));
+		if (!settings)
+			return -1;
 		*settings = (struct rist_logging_settings)
 			LOGGING_SETTINGS_INITIALIZER;
 		*logging_settings = settings;

@@ -446,11 +446,6 @@ static struct rist_peer* setup_rist_peer(struct rist_ctx_wrap *w, struct rist_se
 		}
 	}
 
-	if (rist_sender_stats_callback_set(ctx, setup->statsinterval, sender_stats_callback, NULL) == -1) {
-		rist_log(&logging_settings, RIST_LOG_ERROR, "Could not enable stats callback\n");
-		return NULL;
-	}
-
 	// Rely on the library to parse the url
 	struct rist_peer_config *peer_config_link = NULL;
 	if (rist_parse_address2(setup->token, (void *)&peer_config_link))

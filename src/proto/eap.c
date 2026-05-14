@@ -397,6 +397,10 @@ static int process_eap_response_identity(struct eapsrp_ctx *ctx, size_t len, uin
 {
 	if (len > 255)
 		return -1;
+	/* Defensive: this path expects an authenticator (with a verifier
+	 * lookup); refuse to run if either invariant is missing. */
+	if (ctx->config.role != EAP_ROLE_AUTHENTICATOR || !ctx->config.lookup_func)
+		return -1;
 	memcpy(ctx->config.username, pkt, len);
 	ctx->config.username[len] = '\0';
 #if HAVE_MBEDTLS
@@ -617,6 +621,12 @@ static int process_eap_response(struct eapsrp_ctx *ctx, uint8_t pkt[], size_t le
 	ctx->last_pkt_size = 0;
 	ctx->last_pkt = NULL;
 	if (type == EAP_TYPE_IDENTITY) {
+		/* Only an authenticator should ever process IDENTITY RESPONSE; on the
+		 * authenticatee side ctx->config.lookup_func is NULL (set up via
+		 * calloc + role/username/password assignment in rist_enable_eap_srp_2)
+		 * and process_eap_response_identity would dereference it. */
+		if (ctx->config.role != EAP_ROLE_AUTHENTICATOR || !ctx->config.lookup_func)
+			return EAP_UNEXPECTEDRESPONSE;
 		if (identifier != ctx->last_identifier)
 			return EAP_WRONGIDENTIFIER;
 		return process_eap_response_identity(ctx, (len -1), &pkt[1], eap_version);

@@ -425,6 +425,8 @@ struct librist_crypto_srp_authenticator_ctx *librist_crypto_srp_authenticator_ct
 
 	BIGNUM_INIT(&ctx->A);
 	BIGNUM_INIT(&ctx->b);
+	BIGNUM_INIT(&ctx->k);
+	BIGNUM_INIT(&ctx->B);
 	return ctx;
 
 fail:

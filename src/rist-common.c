@@ -9,6 +9,7 @@
 
 #include "proto/gre.h"
 #include "rist-private.h"
+#include <limits.h>
 #include "log-private.h"
 #include "crypto/psk.h"
 #include "crypto/random.h"
@@ -2857,8 +2858,12 @@ protocol_bypass:
 				info.p, info.e, info.l, info.e,
 				info.n, info.d, info.t, info.v,
 				info.j, info.f);
-			if (info.json_len)
-				rist_log_priv(get_cctx(peer), RIST_LOG_INFO, "Keepalive JSON:\n%.*s\n", info.json_len, info.json);
+			if (info.json_len) {
+				/* %.*s precision must be int. Truncate the log line if some
+				 * weird future caller hands us a giant blob. */
+				int json_log_len = info.json_len > (size_t)INT_MAX ? INT_MAX : (int)info.json_len;
+				rist_log_priv(get_cctx(peer), RIST_LOG_INFO, "Keepalive JSON:\n%.*s\n", json_log_len, info.json);
+			}
 			//TODO: add callback?
 			//TODO: handle capabilities in some way
 			memcpy(&p->data, &info.ka, sizeof(peer->data));

@@ -192,7 +192,7 @@ static int librist_crypto_srp_hash(const uint8_t *indata, size_t inlen, uint8_t 
 {
 #if HAVE_MBEDTLS
 #if !USE_SHA_RET
-	mbedtls_sha256(hash_data, salt_len + SHA256_DIGEST_LENGTH, x_hash, 0)
+	mbedtls_sha256(indata, inlen, outdata, 0);
 #else
 	return mbedtls_sha256_ret(indata, inlen, outdata, 0);
 #endif

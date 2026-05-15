@@ -124,11 +124,10 @@ void librist_crypto_srp_mbedtls_hash_init(HASH_CONTEXT *ctx, bool correct_init) 
 #define BIGNUM_EQUALS(num, comp) (mpz_cmp_ui(num, comp) == 0)
 #define BIGNUM_WRITE_BYTES(num, bytes, bytes_size) mpz_export(bytes, NULL, 1, 1, 0, 0, num)
 /* Nettle's mpz_export into a caller-provided buffer cannot fail; mirror the
- * mbedTLS-side macro so the source compiles unchanged. */
-#define BIGNUM_WRITE_BYTES_OR_GOTO(num, bytes, bytes_size, lbl) do { \
-	(void)(lbl); \
-	mpz_export(bytes, NULL, 1, 1, 0, 0, num); \
-} while (0)
+ * mbedTLS-side macro so the source compiles unchanged. The lbl argument is a
+ * goto target (not an expression), so we cannot reference it here. */
+#define BIGNUM_WRITE_BYTES_OR_GOTO(num, bytes, bytes_size, lbl) \
+	mpz_export(bytes, NULL, 1, 1, 0, 0, num)
 #define BIGNUM_WRITE_BYTES_ALLOC(num, bytes_pp, len_p, lbl) do {\
 	*bytes_pp = mpz_export(NULL, len_p, 1, 1, 0, 0, num); \
 	if (!*bytes_pp) { goto lbl; } \

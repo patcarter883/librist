@@ -397,8 +397,9 @@ static int process_eap_response_identity(struct eapsrp_ctx *ctx, size_t len, uin
 {
 	if (len > 255)
 		return -1;
-	/* Defensive: this path expects an authenticator (with a verifier
-	 * lookup); refuse to run if either invariant is missing. */
+	/* On the authenticatee side ctx->config.lookup_func is NULL (calloc'd
+	 * in rist_enable_eap_srp_2 and never assigned for that role); refuse the
+	 * IDENTITY response here so we don't deref it further down. */
 	if (ctx->config.role != EAP_ROLE_AUTHENTICATOR || !ctx->config.lookup_func)
 		return -1;
 	memcpy(ctx->config.username, pkt, len);

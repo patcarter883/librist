@@ -3062,7 +3062,10 @@ protocol_bypass:
 												(recv_buf + payload_offset),
 												(recv_bufsize - payload_offset))) < 0) {
 					rist_log_priv(get_cctx(p), RIST_LOG_ERROR, "Failed to process EAPOL pkt, return code: %i\n", eapret);
-					if (eapret == 255)//permanent failure, we allow a few retries
+					/* eap_process_eapol returns a negative code; was being
+					 * compared against +255 and never matched, so failed_eap
+					 * was effectively dead. */
+					if (eapret == EAP_AUTH_TERMINATED)
 						failed_eap = true;
 				}
 				else if (p->eap_authentication_state != 2 && eap_is_authenticated(p->eap_ctx)) {

@@ -1,5 +1,6 @@
 #include "random.h"
 #include "config.h"
+#include "log-private.h"
 
 #if HAVE_MBEDTLS
 #include <mbedtls/ctr_drbg.h>
@@ -10,6 +11,10 @@
 
 static mbedtls_entropy_context entropy_ctx;
 static mbedtls_ctr_drbg_context ctr_drbg_ctx;
+/* 0 once mbedtls_ctr_drbg_seed succeeds; non-zero (the mbedTLS error)
+ * if seeding failed and the DRBG context is unusable. Read-only after
+ * pthread_once / InitOnce returns. */
+static int ctr_drbg_seed_ret = MBEDTLS_ERR_CTR_DRBG_ENTROPY_SOURCE_FAILED;
 
 #if !defined(_WIN32) || HAVE_PTHREADS
 //For some reason GNU Hurd complains that PTHREAD_ONCE_INIT isn't a constant
@@ -35,7 +40,17 @@ static BOOL WINAPI librist_crypto_srp_init_random_func(PINIT_ONCE InitOnce, PVOI
 	mbedtls_ctr_drbg_init(&ctr_drbg_ctx);
 	//ctr_drbg_ctx is threadsafe, so can be used by multiple threads freely, seeding isn't though.
 	const char user_custom[] = "libRIST librist_crypto_random_init_func "LIBRIST_VERSION;
-	mbedtls_ctr_drbg_seed(&ctr_drbg_ctx, mbedtls_entropy_func, &entropy_ctx, (const unsigned char  *)user_custom, sizeof(user_custom));
+	ctr_drbg_seed_ret = mbedtls_ctr_drbg_seed(&ctr_drbg_ctx, mbedtls_entropy_func, &entropy_ctx, (const unsigned char  *)user_custom, sizeof(user_custom));
+	if (ctr_drbg_seed_ret != 0) {
+		/* Sandbox / container with no entropy source, missing /dev/urandom,
+		 * or a broken mbedTLS build. The DRBG is now unusable; every
+		 * subsequent _librist_crypto_ramdom_get_bytes() call will return
+		 * the same error rather than silently emitting zeros. */
+		rist_log_priv3(RIST_LOG_ERROR,
+			"CSPRNG seeding failed (mbedtls_ctr_drbg_seed = -0x%04x); "
+			"all crypto-random calls will fail until the entropy source is fixed\n",
+			(unsigned)-ctr_drbg_seed_ret);
+	}
 #endif
 #if !HAVE_PTHREADS
 	return 1;
@@ -62,6 +77,8 @@ int _librist_crypto_ramdom_get_bytes(uint8_t buf[], size_t buflen) {
 	_librist_crypto_random_init();
 	int ret;
 #if HAVE_MBEDTLS
+	if (ctr_drbg_seed_ret != 0)
+		return ctr_drbg_seed_ret;
 	ret = mbedtls_ctr_drbg_random(&ctr_drbg_ctx, buf, buflen);
 #elif HAVE_NETTLE
 	int i=0;
@@ -69,6 +86,10 @@ int _librist_crypto_ramdom_get_bytes(uint8_t buf[], size_t buflen) {
 		ret = gnutls_rnd(GNUTLS_RND_NONCE, buf, buflen);//This call is thread-safe
 		i++;
 	} while (ret != 0 && i < 10);
+	if (ret != 0)
+		rist_log_priv3(RIST_LOG_ERROR,
+			"CSPRNG (gnutls_rnd) failed %d times in a row, returning %d\n",
+			i, ret);
 #endif
 	return ret;
 #else

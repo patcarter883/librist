@@ -323,20 +323,35 @@ int udpsocket_open_connect(const char *host, uint16_t port, const char *mciface)
 
 	if (setsockopt(sd, SOL_SOCKET, SO_REUSEADDR, (char *)&yes, sizeof(int)) < 0) {
 		/* Non-critical error */
+#ifdef _WIN32
+		rist_log_priv3( RIST_LOG_ERROR,"Cannot set SO_REUSEADDR: WSAGetLastError=%d\n", WSAGetLastError());
+#else
 		rist_log_priv3( RIST_LOG_ERROR,"Cannot set SO_REUSEADDR: %s\n", strerror(errno));
+#endif
 	}
 	if (setsockopt(sd, proto, ttlcmd, (char *)&ttl, sizeof(ttl)) < 0) {
 		/* Non-critical error */
+#ifdef _WIN32
+		rist_log_priv3( RIST_LOG_ERROR,"Cannot set socket MAX HOPS: WSAGetLastError=%d\n", WSAGetLastError());
+#else
 		rist_log_priv3( RIST_LOG_ERROR,"Cannot set socket MAX HOPS: %s\n", strerror(errno));
+#endif
 	}
 	if (mciface && mciface[0] != '\0')
 		udpsocket_set_mcast_iface(sd, mciface, raw.sin6_family);
 
 	if (connect(sd, (struct sockaddr *)&raw, addrlen) < 0) {
+#ifdef _WIN32
+		int winerr = WSAGetLastError();
+		rist_log_priv3( RIST_LOG_ERROR, "connect() failed: WSAGetLastError=%d\n", winerr);
+		udpsocket_close(sd);
+		return -1;
+#else
 		int err = errno;
 		udpsocket_close(sd);
 		errno = err;
 		return -1;
+#endif
 	}
 
 	return sd;
@@ -365,10 +380,18 @@ int udpsocket_open_bind(const char *host, uint16_t port, const char *mciface)
 	}
 	if (setsockopt(sd, SOL_SOCKET, SO_REUSEADDR, (char *)&yes, sizeof(int)) < 0) {
 		/* Non-critical error */
+#ifdef _WIN32
+		rist_log_priv3( RIST_LOG_ERROR, "Cannot set SO_REUSEADDR: WSAGetLastError=%d\n", WSAGetLastError());
+#else
 		rist_log_priv3( RIST_LOG_ERROR, "Cannot set SO_REUSEADDR: %s\n", strerror(errno));
+#endif
 	}
 	if (bind(sd, (struct sockaddr *)&raw, addrlen) < 0)	{
+#ifdef _WIN32
+		rist_log_priv3( RIST_LOG_ERROR, "Could not bind to interface: WSAGetLastError=%d\n", WSAGetLastError());
+#else
 		rist_log_priv3( RIST_LOG_ERROR, "Could not bind to interface: %s\n", strerror(errno));
+#endif
 		udpsocket_close(sd);
 		return -1;
 	}
@@ -384,7 +407,10 @@ int udpsocket_set_nonblocking(int sd)
 {
 #ifdef _WIN32
 	u_long iMode=1;
-	ioctlsocket(sd, FIONBIO, &iMode);
+	if (ioctlsocket(sd, FIONBIO, &iMode) != 0) {
+		rist_log_priv3(RIST_LOG_WARN, "ioctlsocket(FIONBIO) failed: WSAGetLastError=%d\n", WSAGetLastError());
+		return -1;
+	}
 #else
 	RIST_MARK_UNUSED(sd);
 #endif

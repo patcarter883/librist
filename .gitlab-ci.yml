@@ -70,9 +70,12 @@ test-ubuntu:
     dependencies:
         - build-ubuntu
     artifacts:
-        when: on_failure
+        when: always
+        reports:
+            junit: build/meson-logs/testlog.junit.xml
         paths:
             - build/meson-logs/testlog.txt
+            - build/meson-logs/testlog.junit.xml
 
 # Run the cross-compiled Windows binaries (with mbedTLS, matching the
 # release configuration) under wine so the same meson test suite that

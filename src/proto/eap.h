@@ -79,11 +79,14 @@ RIST_PACKED_STRUCT(eap_srp_hdr, {
 #define EAP_PASSPHRASE_STATE_SUCCESS 1
 #define EAP_PASSPHRASE_STATE_FAILED 2
 
-#define EAP_LENERR -1
-#define EAP_WRONGIDENTIFIER -2
-#define EAP_UNEXPECTEDRESPONSE -3
-#define EAP_UNEXPECTEDREQUEST -4
-#define EAP_SRP_WRONGSUBTYPE -4
+#define EAP_LENERR              -1
+#define EAP_WRONGIDENTIFIER     -2
+#define EAP_UNEXPECTEDRESPONSE  -3
+#define EAP_UNEXPECTEDREQUEST   -4
+#define EAP_SRP_WRONGSUBTYPE    -5  /* was -4: collided with EAP_UNEXPECTEDREQUEST */
+#define EAP_INTERNALERR         -6  /* crypto context / state precondition missing */
+#define EAP_AUTH_FAILED         -7  /* one authentication attempt failed */
+#define EAP_AUTH_TERMINATED     -8  /* permanent: retries exhausted, drop the peer */
 
 struct eapsrp_ctx;
 RIST_PRIV int eap_process_eapol(struct eapsrp_ctx* ctx, uint8_t pkt[], size_t len);

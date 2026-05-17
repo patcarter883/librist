@@ -7,15 +7,73 @@
 
 #include "librist/udpsocket.h"
 #include "log-private.h"
+#include "pthread-shim.h"
 #ifdef _WIN32
 #include <ws2ipdef.h>
+#include <mstcpip.h>
 #ifndef MCAST_JOIN_GROUP
 #define MCAST_JOIN_GROUP 41
+#endif
+/* SIO_UDP_CONNRESET lives in mstcpip.h but some MinGW SDKs are stale; the
+ * IOCTL code itself is stable (XP+). Provide a fallback definition. */
+#ifndef SIO_UDP_CONNRESET
+#define SIO_UDP_CONNRESET _WSAIOW(IOC_VENDOR, 12)
 #endif
 #endif
 
 /* Private functions */
 static const int yes = 1; // no = 0;
+
+#ifdef _WIN32
+/* WSAStartup must run before the first socket()/getaddrinfo() call in the
+ * process. init_common_ctx() does it for code paths that go through
+ * rist_sender_create()/rist_receiver_create(), but tools can hit
+ * udpsocket_open_connect() earlier via rist_logging_set() (e.g. when
+ * ristreceiver -r is used to forward stats over UDP). Initialise here on
+ * first use, guarded by InitOnceExecuteOnce / pthread_once so concurrent
+ * callers don't race. WSAStartup is ref-counted by Windows, so the
+ * duplicate call from init_common_ctx (kept for backwards-compat with
+ * out-of-tree callers that link directly against rist-common.c) is
+ * harmless. */
+
+#if !defined(_WIN32) || HAVE_PTHREADS
+#if defined(__GNU__)
+static pthread_once_t winsock_init_once = {__PTHREAD_ONCE_INIT};
+#else
+static pthread_once_t winsock_init_once = PTHREAD_ONCE_INIT;
+#endif
+#endif
+#if defined(_WIN32) && !HAVE_PTHREADS
+static INIT_ONCE winsock_init_once = INIT_ONCE_STATIC_INIT;
+#endif
+
+#if HAVE_PTHREADS
+static void _librist_udpsocket_init_winsock_func(void)
+#else
+static BOOL WINAPI _librist_udpsocket_init_winsock_func(PINIT_ONCE InitOnce, PVOID Parameter, PVOID *Context)
+#endif
+{
+	WSADATA wsaData;
+	int ret = WSAStartup(MAKEWORD(2, 2), &wsaData);
+	if (ret != 0) {
+		rist_log_priv3(RIST_LOG_ERROR, "WSAStartup failed: %d\n", ret);
+	}
+#if !HAVE_PTHREADS
+	return TRUE;
+#endif
+}
+
+static void _librist_udpsocket_init_winsock(void)
+{
+#if HAVE_PTHREADS
+	pthread_once(&winsock_init_once, _librist_udpsocket_init_winsock_func);
+#else
+	InitOnceExecuteOnce(&winsock_init_once, _librist_udpsocket_init_winsock_func, NULL, NULL);
+#endif
+}
+#else
+static inline void _librist_udpsocket_init_winsock(void) { }
+#endif
 
 /* Public API */
 
@@ -23,6 +81,8 @@ int udpsocket_resolve_host(const char *host, uint16_t port, struct sockaddr *add
 {
 	struct sockaddr_in *a4 = (struct sockaddr_in *)addr;
 	struct sockaddr_in6 *a6 = (struct sockaddr_in6 *)addr;
+
+	_librist_udpsocket_init_winsock();
 
 	/* Pre-check for numeric IPv6 */
 	if (inet_pton(AF_INET6, host, &a6->sin6_addr) > 0) {
@@ -55,12 +115,34 @@ int udpsocket_resolve_host(const char *host, uint16_t port, struct sockaddr *add
 
 int udpsocket_open(uint16_t af)
 {
+	_librist_udpsocket_init_winsock();
 	int sd = socket(af, SOCK_DGRAM, 0);
 	if (sd < 0) {
 #ifdef _WIN32
 		sd = -1 * WSAGetLastError();
 #endif
+		return sd;
 	}
+#ifdef _WIN32
+	/* Disable the synthetic WSAECONNRESET indication that Windows enqueues
+	 * on a UDP socket when an outbound packet provokes an ICMP
+	 * port-unreachable reply. The indication has a long-standing data-loss
+	 * footgun: the error sits in the recv queue and, on some orderings,
+	 * the next recvfrom() drains a real datagram alongside it (or returns
+	 * WSAEMSGSIZE and silently consumes one whole datagram). librist
+	 * already detects peer loss via RTCP keepalive timeouts, so we don't
+	 * need this signal. See rist/librist#209. */
+	BOOL connreset_new_behavior = FALSE;
+	DWORD connreset_bytes = 0;
+	if (WSAIoctl(sd, SIO_UDP_CONNRESET,
+	             &connreset_new_behavior, sizeof(connreset_new_behavior),
+	             NULL, 0, &connreset_bytes, NULL, NULL) == SOCKET_ERROR) {
+		rist_log_priv3(RIST_LOG_WARN,
+			"WSAIoctl(SIO_UDP_CONNRESET, FALSE) failed: WSAGetLastError=%d; "
+			"WSAECONNRESET indications remain enabled\n",
+			WSAGetLastError());
+	}
+#endif
 	return sd;
 }
 
@@ -268,20 +350,35 @@ int udpsocket_open_connect(const char *host, uint16_t port, const char *mciface)
 
 	if (setsockopt(sd, SOL_SOCKET, SO_REUSEADDR, (char *)&yes, sizeof(int)) < 0) {
 		/* Non-critical error */
+#ifdef _WIN32
+		rist_log_priv3( RIST_LOG_ERROR,"Cannot set SO_REUSEADDR: WSAGetLastError=%d\n", WSAGetLastError());
+#else
 		rist_log_priv3( RIST_LOG_ERROR,"Cannot set SO_REUSEADDR: %s\n", strerror(errno));
+#endif
 	}
 	if (setsockopt(sd, proto, ttlcmd, (char *)&ttl, sizeof(ttl)) < 0) {
 		/* Non-critical error */
+#ifdef _WIN32
+		rist_log_priv3( RIST_LOG_ERROR,"Cannot set socket MAX HOPS: WSAGetLastError=%d\n", WSAGetLastError());
+#else
 		rist_log_priv3( RIST_LOG_ERROR,"Cannot set socket MAX HOPS: %s\n", strerror(errno));
+#endif
 	}
 	if (mciface && mciface[0] != '\0')
 		udpsocket_set_mcast_iface(sd, mciface, raw.sin6_family);
 
 	if (connect(sd, (struct sockaddr *)&raw, addrlen) < 0) {
+#ifdef _WIN32
+		int winerr = WSAGetLastError();
+		rist_log_priv3( RIST_LOG_ERROR, "connect() failed: WSAGetLastError=%d\n", winerr);
+		udpsocket_close(sd);
+		return -1;
+#else
 		int err = errno;
 		udpsocket_close(sd);
 		errno = err;
 		return -1;
+#endif
 	}
 
 	return sd;
@@ -310,10 +407,18 @@ int udpsocket_open_bind(const char *host, uint16_t port, const char *mciface)
 	}
 	if (setsockopt(sd, SOL_SOCKET, SO_REUSEADDR, (char *)&yes, sizeof(int)) < 0) {
 		/* Non-critical error */
+#ifdef _WIN32
+		rist_log_priv3( RIST_LOG_ERROR, "Cannot set SO_REUSEADDR: WSAGetLastError=%d\n", WSAGetLastError());
+#else
 		rist_log_priv3( RIST_LOG_ERROR, "Cannot set SO_REUSEADDR: %s\n", strerror(errno));
+#endif
 	}
 	if (bind(sd, (struct sockaddr *)&raw, addrlen) < 0)	{
+#ifdef _WIN32
+		rist_log_priv3( RIST_LOG_ERROR, "Could not bind to interface: WSAGetLastError=%d\n", WSAGetLastError());
+#else
 		rist_log_priv3( RIST_LOG_ERROR, "Could not bind to interface: %s\n", strerror(errno));
+#endif
 		udpsocket_close(sd);
 		return -1;
 	}
@@ -329,7 +434,10 @@ int udpsocket_set_nonblocking(int sd)
 {
 #ifdef _WIN32
 	u_long iMode=1;
-	ioctlsocket(sd, FIONBIO, &iMode);
+	if (ioctlsocket(sd, FIONBIO, &iMode) != 0) {
+		rist_log_priv3(RIST_LOG_WARN, "ioctlsocket(FIONBIO) failed: WSAGetLastError=%d\n", WSAGetLastError());
+		return -1;
+	}
 #else
 	RIST_MARK_UNUSED(sd);
 #endif

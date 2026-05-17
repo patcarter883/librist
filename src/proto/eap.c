@@ -236,7 +236,7 @@ static int process_eap_request_srp_challenge(struct eapsrp_ctx *ctx, uint8_t ide
 	librist_crypto_srp_client_ctx_free(ctx->client_ctx);
 	ctx->client_ctx = librist_crypto_srp_client_ctx_create(use_default_2048, N, N_len, g, generator_len, salt, salt_len, ctx->eapversion3);
 	if (ctx->client_ctx == NULL)
-		return EAP_LENERR;
+		return EAP_INTERNALERR;
 	uint8_t response[1500] = {0};
 	struct eap_srp_hdr *hdr = (struct eap_srp_hdr *)&response[EAPOL_EAP_HDRS_OFFSET];
 	hdr->type = EAP_TYPE_SRP_SHA1;
@@ -254,7 +254,7 @@ static int process_eap_request_srp_server_key(struct eapsrp_ctx *ctx, uint8_t id
 		ctx->authentication_state = EAP_AUTH_STATE_FAILED;
 		//"must disconnect immediately, set tries past limit"
 		ctx->tries = 255;
-		return -255;
+		return EAP_AUTH_TERMINATED;
 	}
 	size_t out_len = sizeof(struct eap_srp_hdr) + 4 + DIGEST_LENGTH;
 	uint8_t response[(EAPOL_EAP_HDRS_OFFSET + sizeof(struct eap_srp_hdr) + 4 + DIGEST_LENGTH)];
@@ -397,8 +397,9 @@ static int process_eap_response_identity(struct eapsrp_ctx *ctx, size_t len, uin
 {
 	if (len > 255)
 		return -1;
-	/* Defensive: this path expects an authenticator (with a verifier
-	 * lookup); refuse to run if either invariant is missing. */
+	/* On the authenticatee side ctx->config.lookup_func is NULL (calloc'd
+	 * in rist_enable_eap_srp_2 and never assigned for that role); refuse the
+	 * IDENTITY response here so we don't deref it further down. */
 	if (ctx->config.role != EAP_ROLE_AUTHENTICATOR || !ctx->config.lookup_func)
 		return -1;
 	memcpy(ctx->config.username, pkt, len);
@@ -482,13 +483,13 @@ static int process_eap_response_client_key(struct eapsrp_ctx *ctx, size_t len, u
 {
 	if (!ctx->auth_ctx) {
 		ctx->authentication_state = EAP_AUTH_STATE_FAILED;
-		return -254;
+		return EAP_INTERNALERR;
 	}
 
 	if (librist_crypto_srp_authenticator_handle_A(ctx->auth_ctx, pkt, len) != 0) {
 		ctx->authentication_state = EAP_AUTH_STATE_FAILED;
 		ctx->tries = 255;
-		return -255;
+		return EAP_AUTH_TERMINATED;
 	}
 
 	uint8_t outpkt[1500];
@@ -509,17 +510,17 @@ static int process_eap_response_client_validator(struct eapsrp_ctx *ctx, size_t 
 
 	if (!ctx->auth_ctx) {
 		ctx->authentication_state = EAP_AUTH_STATE_FAILED;
-		return -254;
+		return EAP_INTERNALERR;
 	}
 
 	if (librist_crypto_srp_authenticator_verify_m1(ctx->auth_ctx, ctx->config.username, &pkt[4]) != 0) {
 		rist_log_priv2(ctx->config.logging_settings, RIST_LOG_WARN, EAP_LOG_PREFIX"Authentication failed for %s@%s\n", ctx->config.username, ctx->ip_string);
 		ctx->authentication_state = EAP_AUTH_STATE_FAILED;
 		ctx->tries++;
-		int ret = -254;
+		int ret = EAP_AUTH_FAILED;
 		if (ctx->tries > EAP_AUTH_RETRY_MAX) {
 			rist_log_priv2(ctx->config.logging_settings, RIST_LOG_ERROR, EAP_LOG_PREFIX"Authentication retry count exceeded\n");
-			ret = -255;
+			ret = EAP_AUTH_TERMINATED;
 		}
 		uint8_t buf[EAPOL_EAP_HDRS_OFFSET];
 		send_eapol_pkt(ctx, EAPOL_TYPE_EAP, EAP_CODE_FAILURE, ctx->last_identifier, 0, buf, ctx->eapversion3? 3 :2);
@@ -685,7 +686,7 @@ static int process_eap_pkt(struct eapsrp_ctx *ctx, uint8_t pkt[], size_t len, ui
 	if (ctx == NULL)
 		return -1;
 	if (ctx->authentication_state == EAP_AUTH_STATE_FAILED && ctx->tries >EAP_AUTH_RETRY_MAX)
-		return -255;
+		return EAP_AUTH_TERMINATED;
 	if (len < sizeof(struct eap_hdr))
 		return EAP_LENERR;
 	struct eap_hdr *hdr = (struct eap_hdr *)pkt;
@@ -713,7 +714,7 @@ static int process_eap_pkt(struct eapsrp_ctx *ctx, uint8_t pkt[], size_t len, ui
 			rist_log_priv2(ctx->config.logging_settings, RIST_LOG_ERROR, EAP_LOG_PREFIX"Authentication failed\n");
 			if (ctx->tries > EAP_AUTH_RETRY_MAX) {
 				ctx->authentication_state = EAP_AUTH_STATE_FAILED;
-				return -255;
+				return EAP_AUTH_TERMINATED;
 			}
 			return _librist_proto_eap_start(ctx);//try to restart the process
 		default:

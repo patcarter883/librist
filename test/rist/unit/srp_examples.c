@@ -29,6 +29,18 @@
 #include "src/crypto/srp.c"
 #include "src/crypto/srp_constants.c"
 
+/* random.c (compiled into the srp_unit binary) calls rist_log_priv3() on
+ * CSPRNG init failure since release-0.2.16. The unit test deliberately
+ * does not link the full logging machinery, so provide a no-op stub
+ * here to satisfy the linker. The behaviour being logged - CSPRNG seed
+ * failure - is not reachable from the SRP unit test paths anyway. */
+#include "librist/logging.h"
+void rist_log_priv3(enum rist_log_level level, const char *format, ...)
+{
+	(void)level;
+	(void)format;
+}
+
 static void hexstr_to_uint(const char *hexstr, uint8_t *buf, size_t buf_len) {
 	for (size_t i = 0, j = 0; j < buf_len; i += 2, j++)
 		buf[j] = (hexstr[i] % 32 + 9) % 25 * 16 + (hexstr[i + 1] % 32 + 9) % 25;

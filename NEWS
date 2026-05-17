@@ -32,6 +32,14 @@ Bug Fixes:
     and confirmed fixed by Roman Dissertori).
   - Windows socket failure log lines now include the actual WSA
     error code, so user bug reports from Windows are diagnosable.
+  - Cryptographic random number generator now seeds reliably on
+    Windows runtimes where the legacy CryptoAPI (CryptAcquireContext
+    / CryptGenRandom) is missing or unconfigured - notably wine and
+    some sandboxed container builds. The seeding path now uses the
+    modern BCryptGenRandom (CNG) API, supported on every shipping
+    Windows version. Without this fix, the 0.2.15 CSPRNG hardening
+    refused to start the SRP/AES code paths in those environments
+    rather than silently downgrade. Fixes #210.
 
 Hardening / follow-ups to 0.2.15:
 
@@ -57,10 +65,15 @@ Test / CI:
     call. Would have caught #208 on the first Windows-CI run.
   - The full meson test suite now runs against the cross-compiled
     Windows binaries under wine, not just on Linux. Every protocol
-    test that gates Linux releases also gates Windows releases. The
-    wine runtime was already provisioned in the CI image; only the
-    test invocation was missing. Catches Windows-runtime regressions
+    test that gates Linux releases also gates Windows releases,
+    including the SRP / AES encryption suites which are now built
+    with mbedTLS on Windows (see the #210 fix above). The wine
+    runtime was already provisioned in the CI image; only the test
+    invocation was missing. Catches Windows-runtime regressions
     without requiring a native Windows runner.
+  - Per-test results from the Linux job now show up directly in the
+    GitLab MR UI via meson's JUnit output, so reviewers don't have
+    to read job logs to see which test failed.
 
 
 Changes for 0.2.15 (2026-05-14):

@@ -10,8 +10,14 @@
 #include "pthread-shim.h"
 #ifdef _WIN32
 #include <ws2ipdef.h>
+#include <mstcpip.h>
 #ifndef MCAST_JOIN_GROUP
 #define MCAST_JOIN_GROUP 41
+#endif
+/* SIO_UDP_CONNRESET lives in mstcpip.h but some MinGW SDKs are stale; the
+ * IOCTL code itself is stable (XP+). Provide a fallback definition. */
+#ifndef SIO_UDP_CONNRESET
+#define SIO_UDP_CONNRESET _WSAIOW(IOC_VENDOR, 12)
 #endif
 #endif
 
@@ -115,7 +121,28 @@ int udpsocket_open(uint16_t af)
 #ifdef _WIN32
 		sd = -1 * WSAGetLastError();
 #endif
+		return sd;
 	}
+#ifdef _WIN32
+	/* Disable the synthetic WSAECONNRESET indication that Windows enqueues
+	 * on a UDP socket when an outbound packet provokes an ICMP
+	 * port-unreachable reply. The indication has a long-standing data-loss
+	 * footgun: the error sits in the recv queue and, on some orderings,
+	 * the next recvfrom() drains a real datagram alongside it (or returns
+	 * WSAEMSGSIZE and silently consumes one whole datagram). librist
+	 * already detects peer loss via RTCP keepalive timeouts, so we don't
+	 * need this signal. See rist/librist#209. */
+	BOOL connreset_new_behavior = FALSE;
+	DWORD connreset_bytes = 0;
+	if (WSAIoctl(sd, SIO_UDP_CONNRESET,
+	             &connreset_new_behavior, sizeof(connreset_new_behavior),
+	             NULL, 0, &connreset_bytes, NULL, NULL) == SOCKET_ERROR) {
+		rist_log_priv3(RIST_LOG_WARN,
+			"WSAIoctl(SIO_UDP_CONNRESET, FALSE) failed: WSAGetLastError=%d; "
+			"WSAECONNRESET indications remain enabled\n",
+			WSAGetLastError());
+	}
+#endif
 	return sd;
 }
 

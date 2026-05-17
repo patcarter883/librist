@@ -110,6 +110,7 @@ if mbedcrypto_lib_found or use_nettle
 			dependencies: [
 				librist_dep,
 				crypto_deps,
+				threads,
 			],
 			include_directories: inc,
 			install: should_install)

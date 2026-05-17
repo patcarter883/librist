@@ -84,7 +84,8 @@ if host_machine.system() == 'windows'
 	platform_files += 'src/tun_win.c'
 	deps += [
 		cc.find_library('ws2_32'),
-		cc.find_library('iphlpapi')
+		cc.find_library('iphlpapi'),
+		cc.find_library('bcrypt')
 	]
 
 windows_version_test = '''

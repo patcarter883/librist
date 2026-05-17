@@ -51,6 +51,17 @@ Hardening / follow-ups to 0.2.15:
     that read as a removable paranoia check but is actually
     protecting against a NULL function pointer.
 
+Test / CI:
+  - New unit test (logging_init_order) that exercises the
+    rist_logging_set remote-address path before any rist_*_create
+    call. Would have caught #208 on the first Windows-CI run.
+  - The full meson test suite now runs against the cross-compiled
+    Windows binaries under wine, not just on Linux. Every protocol
+    test that gates Linux releases also gates Windows releases. The
+    wine runtime was already provisioned in the CI image; only the
+    test invocation was missing. Catches Windows-runtime regressions
+    without requiring a native Windows runner.
+
 
 Changes for 0.2.15 (2026-05-14):
 --------------------------------

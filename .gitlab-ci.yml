@@ -37,7 +37,6 @@ build-ubuntu:
 build-win64:
     extends: .debian-amd64-common
     script:
-        - wineserver -p && wine wineboot
         - meson build --buildtype release
                       --werror
                       --libdir lib
@@ -71,6 +70,27 @@ test-ubuntu:
         - cd build && meson test --print-errorlogs
     dependencies:
         - build-ubuntu
+    artifacts:
+        when: on_failure
+        paths:
+            - build/meson-logs/testlog.txt
+
+# Run the cross-compiled Windows binaries under wine so the same meson
+# test suite that gates Linux also gates Windows. Catches Windows-runtime
+# regressions like #208 (winsock not initialised before rist_logging_set)
+# that pure cross-compile cannot detect. Does not catch real-Windows
+# kernel behaviours that wine does not replicate (e.g. the #209
+# WSAECONNRESET-from-ICMP-unreach interaction); a native Windows runner
+# would be needed for that and is not available in VideoLAN's shared CI.
+test-win64:
+    stage: test
+    extends: .debian-amd64-common
+    needs: ["build-win64"]
+    dependencies:
+        - build-win64
+    script:
+        - wineserver -p && wine wineboot
+        - cd build && meson test --print-errorlogs --no-rebuild
     artifacts:
         when: on_failure
         paths:

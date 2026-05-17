@@ -5,6 +5,53 @@ A library implementing the Video Services Forum (VSF) Technical
 Recommendations TR-06-1 (Simple Profile) and TR-06-2 (Main Profile).
 
 
+Changes for 0.2.16 (pre-release):
+---------------------------------
+
+ABI/API:
+  - ABI version 10:4:6 (soversion 4, binary-compatible with 0.2.15)
+  - API version 4.7.0 (unchanged)
+
+  Maintenance release for 0.2.15. No source or binary changes are
+  required of downstream consumers.
+
+Bug Fixes:
+
+  Windows:
+  - Windows tools fail to start when remote logging is enabled.
+    Running `ristreceiver -r 127.0.0.1:port ...` on Windows 11 would
+    exit immediately with "Failed to setup logging!" because winsock
+    had not been initialised before the public logging API tried to
+    open a UDP socket. Fixes #208 (reported by Roman Dissertori).
+  - EAP-SRP authentication fails on Windows with multiple peers.
+    A 0.2.15 regression: an outbound packet that drew an ICMP
+    port-unreachable reply caused Windows to corrupt the next
+    incoming UDP datagram on the same socket, which then broke the
+    EAP handshake. Most visible with bonded ethernet+wifi peers,
+    Linux ristsender -> Windows ristreceiver. Fixes #209 (reported
+    and confirmed fixed by Roman Dissertori).
+  - Windows socket failure log lines now include the actual WSA
+    error code, so user bug reports from Windows are diagnosable.
+
+Hardening / follow-ups to 0.2.15:
+
+  - EAP-SRP authentication retry exhaustion did not drop the failed
+    peer. A latent sign-comparison bug meant a peer that failed
+    every authentication retry was kept around in a half-
+    authenticated state instead of being dropped. Not externally
+    reported.
+  - Crypto random number generator could silently downgrade to a
+    weak fallback. If the CSPRNG seed call failed at startup (no
+    kernel entropy source - sandboxed container, embedded image
+    without /dev/urandom, broken build), the failure was dropped
+    and the wall-clock-derived stopgap was used for the lifetime of
+    the process. Now logs loudly and refuses to hand out random
+    bytes. Not externally reported.
+  - Internal EAP error code documentation: clarify a guard comment
+    that read as a removable paranoia check but is actually
+    protecting against a NULL function pointer.
+
+
 Changes for 0.2.15 (2026-05-14):
 --------------------------------
 

@@ -42,7 +42,6 @@ build-win64:
                       --libdir lib
                       --cross-file common/ci/x86_64-w64-mingw32.meson
                       -Ddefault_library=both
-                      -Duse_mbedtls=false
                       -Dhave_mingw_pthreads=true
         - ninja -C build
     artifacts:
@@ -75,13 +74,15 @@ test-ubuntu:
         paths:
             - build/meson-logs/testlog.txt
 
-# Run the cross-compiled Windows binaries under wine so the same meson
-# test suite that gates Linux also gates Windows. Catches Windows-runtime
-# regressions like #208 (winsock not initialised before rist_logging_set)
-# that pure cross-compile cannot detect. Does not catch real-Windows
-# kernel behaviours that wine does not replicate (e.g. the #209
-# WSAECONNRESET-from-ICMP-unreach interaction); a native Windows runner
-# would be needed for that and is not available in VideoLAN's shared CI.
+# Run the cross-compiled Windows binaries (with mbedTLS, matching the
+# release configuration) under wine so the same meson test suite that
+# gates Linux also gates Windows. Catches Windows-runtime regressions
+# like #208 (winsock not initialised before rist_logging_set) and the
+# SRP/AES code paths under #210 that pure cross-compile cannot detect.
+# Does not catch real-Windows kernel behaviours that wine does not
+# replicate (e.g. the #209 WSAECONNRESET-from-ICMP-unreach interaction);
+# a native Windows runner would be needed for that and is not available
+# in VideoLAN's shared CI.
 test-win64:
     stage: test
     extends: .debian-amd64-common

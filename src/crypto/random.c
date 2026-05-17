@@ -3,11 +3,42 @@
 #include "log-private.h"
 
 #if HAVE_MBEDTLS
+#include <string.h>
+
 #include <mbedtls/ctr_drbg.h>
 #include <mbedtls/entropy.h>
+#include <mbedtls/entropy_poll.h>
 
 #include "pthread-shim.h"
 #include "vcs_version.h"
+
+#ifdef _WIN32
+/* mbedTLS's auto-added Windows entropy source uses the legacy CryptoAPI
+ * (CryptAcquireContext + CryptGenRandom). That path requires the RSA
+ * crypto provider to be present and initialised, and fails outright
+ * under wine in stripped-down docker environments (#210). BCryptGenRandom
+ * is the modern CNG entry point, available on every supported Windows
+ * version (Vista+) and reliably implemented by wine since ~2014, so we
+ * substitute it for the default during entropy_init below. */
+#include <windows.h>
+#include <bcrypt.h>
+#ifndef BCRYPT_USE_SYSTEM_PREFERRED_RNG
+#define BCRYPT_USE_SYSTEM_PREFERRED_RNG 0x00000002
+#endif
+
+static int _librist_bcrypt_entropy_poll(void *data, unsigned char *output,
+                                        size_t len, size_t *olen)
+{
+	(void) data;
+	*olen = 0;
+	NTSTATUS s = BCryptGenRandom(NULL, output, (ULONG) len,
+	                             BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+	if (s != 0)
+		return MBEDTLS_ERR_ENTROPY_SOURCE_FAILED;
+	*olen = len;
+	return 0;
+}
+#endif /* _WIN32 */
 
 static mbedtls_entropy_context entropy_ctx;
 static mbedtls_ctr_drbg_context ctr_drbg_ctx;
@@ -37,6 +68,18 @@ static BOOL WINAPI librist_crypto_srp_init_random_func(PINIT_ONCE InitOnce, PVOI
 {
 #if HAVE_MBEDTLS
 	mbedtls_entropy_init(&entropy_ctx);
+#ifdef _WIN32
+	/* Drop the default CryptGenRandom source mbedtls auto-added and
+	 * substitute our BCryptGenRandom one. See #210 and the comment
+	 * on _librist_bcrypt_entropy_poll above. The init was called once
+	 * via pthread_once / InitOnce, so this struct mutation runs at
+	 * most once and is not seen by any concurrent caller. */
+	entropy_ctx.source_count = 0;
+	memset(entropy_ctx.source, 0, sizeof(entropy_ctx.source));
+	mbedtls_entropy_add_source(&entropy_ctx, _librist_bcrypt_entropy_poll,
+	                           NULL, MBEDTLS_ENTROPY_MIN_PLATFORM,
+	                           MBEDTLS_ENTROPY_SOURCE_STRONG);
+#endif
 	mbedtls_ctr_drbg_init(&ctr_drbg_ctx);
 	//ctr_drbg_ctx is threadsafe, so can be used by multiple threads freely, seeding isn't though.
 	const char user_custom[] = "libRIST librist_crypto_random_init_func "LIBRIST_VERSION;

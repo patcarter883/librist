@@ -126,8 +126,10 @@ cJSON *rist_sender_peer_statistics(struct rist_peer *peer)
 
 	stats_container->stats_json = stats_string;
 	stats_container->json_size = (uint32_t)strlen(stats_string);
-	stats_container->stats.sender_peer.cname[0] = '\0';
-	strncpy(stats_container->stats.sender_peer.cname, peer->receiver_name, RIST_MAX_STRING_SHORT);
+	strncpy(stats_container->stats.sender_peer.cname,
+		peer->receiver_name,
+		sizeof(stats_container->stats.sender_peer.cname) - 1);
+	stats_container->stats.sender_peer.cname[sizeof(stats_container->stats.sender_peer.cname) - 1] = '\0';
 	stats_container->stats.sender_peer.peer_id = peer->adv_peer_id;
 	stats_container->stats.sender_peer.bandwidth = bitrate;
 	stats_container->stats.sender_peer.retry_bandwidth = retry_bitrate;

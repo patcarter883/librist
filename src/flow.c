@@ -185,6 +185,15 @@ static void rist_flow_append(struct rist_flow **FLOWS, struct rist_flow *f)
 	last->next = f;
 }
 
+/* Soft cap on simultaneous receiver flows. A peer can advertise an
+ * arbitrary 32-bit flow_id and we always create_flow() on a previously
+ * unseen one, so without a cap an attacker that can land authenticated
+ * traffic (or any traffic on a non-encrypted receiver) can exhaust
+ * memory by walking flow_id space. 256 is well past any legitimate
+ * deployment we've seen. */
+#define RIST_MAX_FLOWS 256
+#define RIST_MAX_PEERS_PER_FLOW 256
+
 static struct rist_flow *create_flow(struct rist_receiver *ctx, uint32_t flow_id)
 {
 	struct rist_flow *f = calloc(1, sizeof(*f));
@@ -231,8 +240,24 @@ static struct rist_flow *create_flow(struct rist_receiver *ctx, uint32_t flow_id
 	f->session_timeout = RIST_DEFAULT_SESSION_TIMEOUT * RIST_CLOCK;
 	f->flow_timeout = 250 * RIST_CLOCK;
 
-	/* Append flow to list */
+	/* Count + cap-check + append under one critical section so concurrent
+	 * callers cannot each observe a sub-cap count and each insert. */
 	pthread_mutex_lock(&ctx->common.flows_lock);
+	size_t flow_count = 0;
+	for (struct rist_flow *cur = ctx->common.FLOWS; cur != NULL; cur = cur->next)
+		flow_count++;
+	if (flow_count >= RIST_MAX_FLOWS) {
+		pthread_mutex_unlock(&ctx->common.flows_lock);
+		rist_log_priv(&ctx->common, RIST_LOG_ERROR,
+			"Refusing to create FLOW #%"PRIu32" inside create_flow: "
+			"cap of %d flows reached (race with concurrent caller)\n",
+			flow_id, RIST_MAX_FLOWS);
+		pthread_mutex_destroy(&f->mutex);
+		pthread_cond_destroy(&f->condition);
+		free(f->dataout_fifo_queue);
+		free(f);
+		return NULL;
+	}
 	rist_flow_append(&ctx->common.FLOWS, f);
 	pthread_mutex_unlock(&ctx->common.flows_lock);
 	f->logging_settings = ctx->common.logging_settings;
@@ -251,14 +276,6 @@ static bool flow_has_peer(struct rist_flow *f, uint32_t flow_id, uint32_t peer_i
 
 	return false;
 }
-
-/* Soft cap on simultaneous receiver flows. A peer can advertise an
- * arbitrary 32-bit flow_id and we always create_flow() on a previously
- * unseen one, so without a cap an attacker that can land authenticated
- * traffic (or any traffic on a non-encrypted receiver) can exhaust
- * memory by walking flow_id space. 256 is well past any legitimate
- * deployment we've seen. */
-#define RIST_MAX_FLOWS 256
 
 int rist_receiver_associate_flow(struct rist_peer *p, uint32_t flow_id)
 {
@@ -351,10 +368,17 @@ int rist_receiver_associate_flow(struct rist_peer *p, uint32_t flow_id)
 	p->flow = f;
 	p->adv_flow_id = flow_id;
 	if (ret == 1) {
-		/* Hold f->mutex across the realloc so concurrent walkers
-		 * (rist_best_rtt_index, output thread, stats path) don't
-		 * dereference a freed pointer if peer_lst moves. */
+		/* f->mutex protects peer_lst against all concurrent walkers/writers. */
 		pthread_mutex_lock(&f->mutex);
+		if (f->peer_lst_len >= RIST_MAX_PEERS_PER_FLOW) {
+			pthread_mutex_unlock(&f->mutex);
+			rist_log_priv(&ctx->common, RIST_LOG_ERROR,
+				"Refusing to attach peer (id=%u) to flow #%"PRIu32": "
+				"cap of %d peers/flow reached\n",
+				p->adv_peer_id, flow_id, RIST_MAX_PEERS_PER_FLOW);
+			p->flow = NULL;
+			return -1;
+		}
 		struct rist_peer **new_lst = realloc(f->peer_lst, (f->peer_lst_len + 1) * sizeof(*f->peer_lst));
 		if (!new_lst) {
 			pthread_mutex_unlock(&f->mutex);

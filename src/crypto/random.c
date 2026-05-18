@@ -13,34 +13,31 @@
 #include "vcs_version.h"
 
 #ifdef _WIN32
-/* mbedTLS's auto-added Windows entropy source uses the legacy CryptoAPI
- * (CryptAcquireContext + CryptGenRandom). That path requires the RSA
- * crypto provider to be present and initialised, and fails outright
- * under wine in stripped-down docker environments (#210). BCryptGenRandom
- * is the modern CNG entry point, available on every supported Windows
- * version (Vista+) and reliably implemented by wine since ~2014, so we
- * substitute it for the default during entropy_init below. */
+/* Seed the DRBG from BCryptGenRandom (CNG) directly. The mbedTLS-provided
+ * Windows entropy source uses the legacy CryptoAPI which is missing or
+ * unconfigured under wine and stripped-down container images (#210); going
+ * through f_rng instead of the entropy module also avoids touching any
+ * MBEDTLS_PRIVATE() internals on mbedTLS 3.x. */
 #include <windows.h>
 #include <bcrypt.h>
 #ifndef BCRYPT_USE_SYSTEM_PREFERRED_RNG
 #define BCRYPT_USE_SYSTEM_PREFERRED_RNG 0x00000002
 #endif
 
-static int _librist_bcrypt_entropy_poll(void *data, unsigned char *output,
-                                        size_t len, size_t *olen)
+static int _librist_bcrypt_f_rng(void *data, unsigned char *output, size_t len)
 {
 	(void) data;
-	*olen = 0;
 	NTSTATUS s = BCryptGenRandom(NULL, output, (ULONG) len,
 	                             BCRYPT_USE_SYSTEM_PREFERRED_RNG);
 	if (s != 0)
-		return MBEDTLS_ERR_ENTROPY_SOURCE_FAILED;
-	*olen = len;
+		return MBEDTLS_ERR_CTR_DRBG_ENTROPY_SOURCE_FAILED;
 	return 0;
 }
 #endif /* _WIN32 */
 
+#ifndef _WIN32
 static mbedtls_entropy_context entropy_ctx;
+#endif
 static mbedtls_ctr_drbg_context ctr_drbg_ctx;
 /* 0 once mbedtls_ctr_drbg_seed succeeds; non-zero (the mbedTLS error)
  * if seeding failed and the DRBG context is unusable. Read-only after
@@ -67,23 +64,17 @@ static BOOL WINAPI librist_crypto_srp_init_random_func(PINIT_ONCE InitOnce, PVOI
 #endif
 {
 #if HAVE_MBEDTLS
-	mbedtls_entropy_init(&entropy_ctx);
-#ifdef _WIN32
-	/* Drop the default CryptGenRandom source mbedtls auto-added and
-	 * substitute our BCryptGenRandom one. See #210 and the comment
-	 * on _librist_bcrypt_entropy_poll above. The init was called once
-	 * via pthread_once / InitOnce, so this struct mutation runs at
-	 * most once and is not seen by any concurrent caller. */
-	entropy_ctx.source_count = 0;
-	memset(entropy_ctx.source, 0, sizeof(entropy_ctx.source));
-	mbedtls_entropy_add_source(&entropy_ctx, _librist_bcrypt_entropy_poll,
-	                           NULL, MBEDTLS_ENTROPY_MIN_PLATFORM,
-	                           MBEDTLS_ENTROPY_SOURCE_STRONG);
-#endif
 	mbedtls_ctr_drbg_init(&ctr_drbg_ctx);
 	//ctr_drbg_ctx is threadsafe, so can be used by multiple threads freely, seeding isn't though.
 	const char user_custom[] = "libRIST librist_crypto_random_init_func "LIBRIST_VERSION;
-	ctr_drbg_seed_ret = mbedtls_ctr_drbg_seed(&ctr_drbg_ctx, mbedtls_entropy_func, &entropy_ctx, (const unsigned char  *)user_custom, sizeof(user_custom));
+#ifdef _WIN32
+	ctr_drbg_seed_ret = mbedtls_ctr_drbg_seed(&ctr_drbg_ctx, _librist_bcrypt_f_rng, NULL,
+		(const unsigned char *)user_custom, sizeof(user_custom));
+#else
+	mbedtls_entropy_init(&entropy_ctx);
+	ctr_drbg_seed_ret = mbedtls_ctr_drbg_seed(&ctr_drbg_ctx, mbedtls_entropy_func, &entropy_ctx,
+		(const unsigned char *)user_custom, sizeof(user_custom));
+#endif
 	if (ctr_drbg_seed_ret != 0) {
 		/* Sandbox / container with no entropy source, missing /dev/urandom,
 		 * or a broken mbedTLS build. The DRBG is now unusable; every

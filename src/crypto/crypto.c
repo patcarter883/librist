@@ -43,18 +43,24 @@ uint64_t rist_siphash(uint64_t birthtime, uint32_t seq, const char *phrase)
 }
 */
 
-/* Used for the PSK GRE nonce (input to PBKDF2), the EAP identifier and
- * peer SSRCs. Must be unpredictable, so route through the same CSPRNG
- * we already use for SRP key material instead of plain rand(). */
+/* Non-security caller of the CSPRNG with a wall-clock fallback on failure.
+ * Used by SSRC / flow-id / peer-id generation. Security-critical sites must
+ * use _librist_crypto_random_u32 instead. */
 uint32_t prand_u32(void) {
 	uint32_t u32 = 0;
 	if (_librist_crypto_ramdom_get_bytes((uint8_t *)&u32, sizeof(u32)) == 0)
 		return u32;
-	/* CSPRNG failure is unexpected post-init; mix the wall clock so we
-	 * at least don't return a constant, and avoid returning 0 since the
-	 * nonce generator spins on it. */
 	uint32_t fallback = (uint32_t)timestampNTP_u64();
 	return fallback ? fallback : 0xa5a5a5a5u;
+}
+
+int _librist_crypto_random_u32(uint32_t *out) {
+	uint32_t u32 = 0;
+	int ret = _librist_crypto_ramdom_get_bytes((uint8_t *)&u32, sizeof(u32));
+	if (ret != 0)
+		return ret;
+	*out = u32;
+	return 0;
 }
 
 uint32_t rand_u32(void)

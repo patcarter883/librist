@@ -59,6 +59,132 @@ Hardening / follow-ups to 0.2.15:
     that read as a removable paranoia check but is actually
     protecting against a NULL function pointer.
 
+  Post-0.2.15 audit follow-ups (reported by Thomas Guillem):
+
+  Receiver flow / peer accounting:
+  - Receivers no longer crash or corrupt their peer list when a
+    peer is added to a flow at the same instant another thread is
+    removing one. The list of peers per flow was being walked by
+    one thread under one lock and modified by another thread under
+    a different lock; the two paths now agree. A 256-peer-per-flow
+    cap is also enforced so a misconfigured (or hostile) sender
+    cannot grow the list without bound.
+  - Receivers stop creating flows once 256 active flows already
+    exist. Previously the count was checked and the new flow
+    allocated in separate steps, so a burst of new flow IDs could
+    race past the limit. Now the count check and the slot insert
+    happen under the same lock.
+
+  EAP-SRP authenticator:
+  - Authenticated peers can no longer be deauthenticated by a
+    spoofed EAPOL-LOGOFF. A successfully authenticated session
+    used to reset to start-over state on receipt of any LOGOFF
+    packet, which made the auth state machine trivially DoSable
+    from off-path. LOGOFF is now only honoured before the session
+    reaches authenticated state, and a legitimate LOGOFF before
+    that point also resets the retry counter so a counter
+    wrap-around can't lock the peer out for the lifetime of the
+    process.
+  - A spoofed EAP FAILURE no longer pushes the local state machine
+    into permanent failure. FAILURE packets are now matched
+    against the identifier of the in-flight EAP exchange and
+    dropped if they don't match, the same way Request/Response are
+    matched. A genuine FAILURE still latches the peer out, but
+    after a 30-second quiet period the peer is allowed to retry
+    from the start so a transient burst of bad responses doesn't
+    require restarting the process.
+  - EAP authenticators no longer answer EAP Identity requests
+    themselves. The handler used to run on both roles, so a
+    misbehaving (or attacker-controlled) authenticatee could
+    persuade the authenticator to discard its own session state
+    and start over. The handler is now restricted to the
+    authenticatee role, and even there it is rate-limited so the
+    pre-auth reset cannot be triggered repeatedly to wipe
+    in-progress sessions.
+  - EAP SRP setup now caps the advertised modulus (N) and
+    generator (g) lengths at 1024 bytes (8192-bit groups, the
+    largest standard RFC 5054 group). A peer that advertised
+    multi-megabyte values used to allocate that much memory and
+    burn that much CPU on bignum imports before deciding the
+    handshake was bogus.
+
+  PSK encryption:
+  - The PSK nonce generator no longer falls back to a
+    wall-clock-derived value when the CSPRNG misbehaves. Nonces
+    are required to come from the system CSPRNG; if it fails or
+    returns suspect output the key is marked broken, encryption
+    refuses to produce ciphertext for that key (sends zeroes
+    instead so a downstream consumer cannot mistake it for a
+    successful encrypt), and the existing audible logging fires.
+    Decryption was already locked out in the same condition; this
+    closes the encrypt-side gap. The non-security-critical
+    `prand_u32` helper used elsewhere in the tree keeps its
+    wall-clock fallback because its callers don't need
+    unpredictability.
+  - PSK decryption now skips the PBKDF2 key derivation when the
+    key is already locked out. A bursty stream of malformed
+    encrypted packets at a peer whose key state was already
+    compromised used to spin tens of thousands of PBKDF2 rounds
+    per packet before rejecting it. The lockout check now happens
+    first, so the per-packet cost drops to a few comparisons.
+  - PSK AES-CTR dispatch no longer silently falls back to AES-128
+    on an unknown key size. The earlier switch-case used a
+    fallthrough that meant a corrupted or unsupported key length
+    would still be processed (with the wrong cipher), which
+    masked configuration errors. Unknown key sizes now return
+    without touching the buffer.
+
+  SRP / cryptographic primitives:
+  - The Nettle build of SRP no longer feeds uninitialized stack
+    into the bignum library when the CSPRNG returns no entropy.
+    The Nettle random callback's signature returns void, so a
+    CSPRNG failure was previously dropped on the floor and the
+    caller computed against whatever was on the stack. The
+    callback now zeroes its output buffer and signals the caller
+    via a side-channel context; the bignum operation then fails
+    cleanly. The mbedTLS build was already correct.
+  - The SRP NG (N/g) group identifier enum now keeps its
+    pre-0.2.15 integer values. The 0.2.15 release deleted the two
+    smallest groups (NG_512, NG_768 - both below current
+    minimum-strength thresholds) but shifted every remaining
+    enum entry down by two as a side effect. The integer "2",
+    which any external caller might reasonably have hardcoded
+    for NG_1024, silently started meaning NG_4096. The deleted
+    values 0 and 1 are now explicit reserved slots that return
+    "no such group" - code that uses the named constants
+    (`LIBRIST_SRP_NG_1024` etc.) is unaffected, code that used
+    literal integers either gets the group it asked for or a
+    clean error.
+
+  Statistics JSON:
+  - The stats JSON payloads (sender flow, sender per-peer wrapper,
+    receiver flow) now carry an explicit top-level
+    `schema_version` field. The current value is 2 - version 1 was
+    the duplicate-`peer`-key sender shape that v0.2.15 replaced
+    with a `peers` array (NEWS noted the change, but downstream
+    parsers had no way to detect which shape they were getting).
+    Any future incompatible shape change must bump this number.
+  - The sender `cname` field copy is now explicitly
+    NUL-terminated. The previous strncpy with a destination-sized
+    length depended on a separate bounds check elsewhere in the
+    receive path to keep the result safe; the contract is now
+    self-contained.
+
+  Build / portability:
+  - librist now requires mbedTLS >= 2.7 (March 2018), and emits a
+    clean #error if built against anything older. The compatibility
+    branch for pre-2.7 mbedTLS releases (which used the
+    void-returning SHA-256 API) had no CI coverage and was the
+    same untestable corner that produced a 0.2.14 build break -
+    dropping it removes the surface area entirely. Every still-
+    supported distro is well past 2.7; the bundled tree is 2.28.x.
+  - On Windows, the mbedTLS CSPRNG seed no longer reaches into
+    private mbedtls_entropy_context fields to keep its source
+    count happy. It now seeds the CTR_DRBG directly from
+    BCryptGenRandom, skipping the entropy module entirely on
+    Windows. Non-Windows builds still use the normal entropy
+    initialisation path.
+
 Test / CI:
   - New unit test (logging_init_order) that exercises the
     rist_logging_set remote-address path before any rist_*_create

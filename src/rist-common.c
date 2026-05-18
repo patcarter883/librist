@@ -1093,7 +1093,9 @@ static void send_nack_group(struct rist_receiver *ctx, struct rist_flow *f)
 	// Now actually send all the nack IP packets for this flow (the above routing will process/group them)
 	if (f->nacks.counter == 0)
 		return;
+	/* Lock order: peerlist_lock outside, f->mutex inside. */
 	pthread_mutex_lock(&ctx->common.peerlist_lock);
+	pthread_mutex_lock(&f->mutex);
 	struct rist_peer *peer = NULL;
 	uint64_t last_rtt = UINT64_MAX;
 	if (f->peer_lst_len == 0 || f->peer_lst == NULL)
@@ -1125,6 +1127,7 @@ static void send_nack_group(struct rist_receiver *ctx, struct rist_flow *f)
 	}
 	f->nacks.counter = 0;
 out:
+	pthread_mutex_unlock(&f->mutex);
 	pthread_mutex_unlock(&ctx->common.peerlist_lock);
 }
 
@@ -3697,29 +3700,37 @@ static inline void peer_remove_linked_list(struct rist_peer *peer) {
 
 void remove_peer_from_flow(struct rist_peer *peer)
 {
+	struct rist_flow *f = peer->flow;
+	if (f == NULL)
+		return;
+	pthread_mutex_lock(&f->mutex);
 	bool found = false;
-	for (size_t i = 0; i < peer->flow->peer_lst_len; i++)
+	for (size_t i = 0; i < f->peer_lst_len; i++)
 	{
-		if (peer->flow->peer_lst[i] == peer)
+		if (f->peer_lst[i] == peer)
 		{
-			peer->flow->peer_lst[i] = peer->flow->peer_lst[(peer->flow->peer_lst_len -1)];
+			f->peer_lst[i] = f->peer_lst[(f->peer_lst_len -1)];
 			found = true;
 			break;
 		}
 	}
 	if (found)
 	{
-		if (peer->flow->peer_lst_len > 1)
+		if (f->peer_lst_len > 1)
 		{
-			peer->flow->peer_lst = realloc(peer->flow->peer_lst, sizeof(peer) * (peer->flow->peer_lst_len -1));
-			peer->flow->peer_lst_len--;
+			struct rist_peer **shrunk = realloc(f->peer_lst, sizeof(peer) * (f->peer_lst_len -1));
+			/* Shrink realloc may fail; keep the oversized allocation. */
+			if (shrunk)
+				f->peer_lst = shrunk;
+			f->peer_lst_len--;
 		} else
 		{
-			free(peer->flow->peer_lst);
-			peer->flow->peer_lst_len = 0;
-			peer->flow->peer_lst = NULL;
+			free(f->peer_lst);
+			f->peer_lst_len = 0;
+			f->peer_lst = NULL;
 		}
 	}
+	pthread_mutex_unlock(&f->mutex);
 }
 
 int rist_peer_remove(struct rist_common_ctx *ctx, struct rist_peer *peer, struct rist_peer **next)
@@ -3814,7 +3825,10 @@ int rist_peer_remove(struct rist_common_ctx *ctx, struct rist_peer *peer, struct
 
 		if (found) {
 			if (peer->flow->peer_lst_len > 1) {
-				peer->flow->peer_lst = realloc(peer->flow->peer_lst, sizeof(peer) * (peer->flow->peer_lst_len -1));
+				/* Shrink realloc may fail; keep the oversized allocation. */
+				struct rist_peer **shrunk = realloc(peer->flow->peer_lst, sizeof(peer) * (peer->flow->peer_lst_len -1));
+				if (shrunk)
+					peer->flow->peer_lst = shrunk;
 				peer->flow->peer_lst_len--;
 			} else {
 				free(peer->flow->peer_lst);
@@ -4194,10 +4208,12 @@ PTHREAD_START_FUNC(receiver_pthread_protocol, arg)
 						}
 						pthread_mutex_unlock(&f->mutex);
 						pthread_mutex_lock(&ctx->common.peerlist_lock);
+						pthread_mutex_lock(&f->mutex);
 						for (size_t i = 0; i < f->peer_lst_len; i++) {
 							struct rist_peer *peer = f->peer_lst[i];
 							peer->flow = NULL;
 						}
+						pthread_mutex_unlock(&f->mutex);
 						rist_delete_flow(ctx, f);
 						pthread_mutex_unlock(&ctx->common.peerlist_lock);
 						f = next;

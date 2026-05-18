@@ -14,6 +14,9 @@
 #include <string.h>
 #include "cjson/cJSON.h"
 
+/* Bump on any incompatible shape change to the stats JSON payloads. */
+#define RIST_STATS_JSON_SCHEMA_VERSION 2
+
 static double round_two_digits(double number)
 {
 	long new_number = (long)(number * 100);
@@ -23,6 +26,7 @@ static double round_two_digits(double number)
 void rist_sender_flow_statistics(struct rist_sender *ctx)
 {
 	cJSON *stats = cJSON_CreateObject();
+	cJSON_AddNumberToObject(stats, "schema_version", RIST_STATS_JSON_SCHEMA_VERSION);
 	cJSON *rist_sender_stats = cJSON_AddObjectToObject(stats, "sender-stats");
 	cJSON *peers = cJSON_AddArrayToObject(rist_sender_stats, "peers");
 
@@ -118,6 +122,7 @@ cJSON *rist_sender_peer_statistics(struct rist_peer *peer)
 	cJSON_AddNumberToObject(json_stats, "retry_buffer_size", (double)retry_buf_size);
 	cJSON_AddNumberToObject(json_stats, "cooldown_time", (double)time_left);
 	cJSON *stats = cJSON_CreateObject();
+	cJSON_AddNumberToObject(stats, "schema_version", RIST_STATS_JSON_SCHEMA_VERSION);
 	cJSON *rist_sender_stats = cJSON_AddObjectToObject(stats, "sender-stats");
 	cJSON *peers = cJSON_AddArrayToObject(rist_sender_stats, "peers");
 	cJSON_AddItemToArray(peers, cJSON_Duplicate(peer_obj, true));
@@ -126,8 +131,10 @@ cJSON *rist_sender_peer_statistics(struct rist_peer *peer)
 
 	stats_container->stats_json = stats_string;
 	stats_container->json_size = (uint32_t)strlen(stats_string);
-	stats_container->stats.sender_peer.cname[0] = '\0';
-	strncpy(stats_container->stats.sender_peer.cname, peer->receiver_name, RIST_MAX_STRING_SHORT);
+	strncpy(stats_container->stats.sender_peer.cname,
+		peer->receiver_name,
+		sizeof(stats_container->stats.sender_peer.cname) - 1);
+	stats_container->stats.sender_peer.cname[sizeof(stats_container->stats.sender_peer.cname) - 1] = '\0';
 	stats_container->stats.sender_peer.peer_id = peer->adv_peer_id;
 	stats_container->stats.sender_peer.bandwidth = bitrate;
 	stats_container->stats.sender_peer.retry_bandwidth = retry_bitrate;
@@ -174,6 +181,7 @@ void rist_receiver_flow_statistics(struct rist_receiver *ctx, struct rist_flow *
 	stats_container->stats.receiver_flow.peers = calloc(flow->peer_lst_len, sizeof(struct rist_stats_receiver_peer));
 
 	cJSON *stats = cJSON_CreateObject();
+	cJSON_AddNumberToObject(stats, "schema_version", RIST_STATS_JSON_SCHEMA_VERSION);
 	cJSON *stats_obj = cJSON_AddObjectToObject(stats, "receiver-stats");
 	cJSON *flow_obj = cJSON_AddObjectToObject(stats_obj, "flowinstant");
 	cJSON_AddNumberToObject(flow_obj, "flow_id", flow->flow_id);

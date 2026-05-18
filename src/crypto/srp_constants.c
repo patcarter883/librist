@@ -98,12 +98,15 @@ int librist_get_ng_constants(librist_srp_ng_e ng_pair, const char **n, const cha
 	if (*n != NULL || *g != NULL) {
 		return -1;
 	}
+	if ((int)ng_pair < (int)LIBRIST_SRP_NG_1024)
+		return -1;
+	int idx = (int)ng_pair - (int)LIBRIST_SRP_NG_1024;
 	int i = 0;
 	while (true) {
 		if (global_Ng_constants[i].n_hex == NULL) {
 			return -1;
 		}
-		if (i == (int)ng_pair) {
+		if (i == idx) {
 			*n = global_Ng_constants[i].n_hex;
 			*g = global_Ng_constants[i].g_hex;
 			return 0;

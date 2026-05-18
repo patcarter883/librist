@@ -26,6 +26,7 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include <assert.h>
+#include <limits.h>
 
 #define HASH_ALGO SRP_SHA256
 #define DIGEST_LENGTH SHA256_DIGEST_LENGTH
@@ -34,6 +35,12 @@
 #define EAP_AUTH_TIMEOUT_RETRY_MAX 5
 #define EAP_AUTH_TIMEOUT 500//ms
 #define EAP_REAUTH_PERIOD 60000 // ms
+#define EAP_AUTH_FAILED_RECOVERY 30000 // ms, soft-FAILED -> UNAUTH after this quiet
+#define EAP_IDENTITY_REPLY_INTERVAL 200 // ms, rate-limit pre-auth IDENTITY replies
+#define EAP_MAX_MODULUS_BYTES 1024 // largest RFC 5054 group (NG_8192) is 1024 bytes
+
+/* Permanent-failure sentinel for ctx->tries; fixed point under eap_tries_inc(). */
+#define EAP_AUTH_TRIES_PERMANENT UINT_MAX
 
 static int eap_request_passphrase(struct eapsrp_ctx *ctx, bool start);
 
@@ -54,9 +61,12 @@ struct eapsrp_ctx
 
     int authentication_state;
     uint8_t last_identifier;
-    uint8_t tries;
+    unsigned int tries;
     bool may_rollover_passphrase;
     bool did_first_auth;
+
+    uint64_t failed_state_timestamp; /* 0 = not in soft-FAILED */
+    uint64_t last_identity_reply_timestamp; /* rate-limit pre-auth IDENTITY replies */
 
     uint64_t passphrase_request_timer;
     int passphrase_request_times;
@@ -100,6 +110,13 @@ struct eapsrp_ctx
 
 	bool eapversion3;//EAPv3 signalled. old libRIST used v2, so use this to ensure compat with broken hashing
 };
+
+static inline void eap_tries_inc(struct eapsrp_ctx *ctx)
+{
+	/* Saturating: stays parked at EAP_AUTH_TRIES_PERMANENT instead of wrapping. */
+	if (ctx->tries < EAP_AUTH_TRIES_PERMANENT)
+		ctx->tries++;
+}
 
 void eap_reset_data(struct eapsrp_ctx *ctx)
 {
@@ -165,12 +182,21 @@ static int send_eapol_pkt(struct eapsrp_ctx *ctx, uint8_t eapoltype, uint8_t eap
 //EAP REQUEST HANDLING
 static int process_eap_request_identity(struct eapsrp_ctx *ctx, uint8_t identifier)
 {
-	/* Don't tear down an established session on a spoofed identity request:
-	 * once we're authenticated, a forged EAP_REQUEST_IDENTITY can only ask us
-	 * to start over, which is what the attacker wants.  Re-auth is driven by
-	 * the timers in eap_periodic. */
+	if (ctx->config.role == EAP_ROLE_AUTHENTICATOR)
+		return EAP_UNEXPECTEDREQUEST;
+	/* Refuse pre-auth resets once authenticated; re-auth runs from eap_periodic. */
 	if (ctx->authentication_state >= EAP_AUTH_STATE_SUCCESS)
 		return EAP_UNEXPECTEDREQUEST;
+	/* Rate-limit pre-auth replies (caps username echo + eap_reset_data work). */
+	uint64_t now = timestampNTP_u64();
+	if (ctx->last_identity_reply_timestamp != 0 &&
+	    now < ctx->last_identity_reply_timestamp + (uint64_t)EAP_IDENTITY_REPLY_INTERVAL * RIST_CLOCK) {
+		rist_log_priv2(ctx->config.logging_settings, RIST_LOG_DEBUG,
+			EAP_LOG_PREFIX"Rate-limiting EAP IDENTITY response (last sent %u ms ago)\n",
+			(unsigned)((now - ctx->last_identity_reply_timestamp) / RIST_CLOCK));
+		return 0;
+	}
+	ctx->last_identity_reply_timestamp = now;
 	eap_reset_data(ctx);
 	uint8_t eapolpkt[512];
 	size_t offset = EAPOL_EAP_HDRS_OFFSET;
@@ -227,11 +253,15 @@ static int process_eap_request_srp_challenge(struct eapsrp_ctx *ctx, uint8_t ide
 	{
 		if (generator_len > len - offset)
 			return EAP_LENERR;
+		if (generator_len > EAP_MAX_MODULUS_BYTES)
+			return EAP_LENERR;
 
 		g = &pkt[offset];
 		offset += generator_len;
 		N = &pkt[offset];
 		N_len = len - offset;
+		if (N_len > EAP_MAX_MODULUS_BYTES)
+			return EAP_LENERR;
 	}
 	librist_crypto_srp_client_ctx_free(ctx->client_ctx);
 	ctx->client_ctx = librist_crypto_srp_client_ctx_create(use_default_2048, N, N_len, g, generator_len, salt, salt_len, ctx->eapversion3);
@@ -253,7 +283,7 @@ static int process_eap_request_srp_server_key(struct eapsrp_ctx *ctx, uint8_t id
 	{
 		ctx->authentication_state = EAP_AUTH_STATE_FAILED;
 		//"must disconnect immediately, set tries past limit"
-		ctx->tries = 255;
+		ctx->tries = EAP_AUTH_TRIES_PERMANENT;
 		return EAP_AUTH_TERMINATED;
 	}
 	size_t out_len = sizeof(struct eap_srp_hdr) + 4 + DIGEST_LENGTH;
@@ -295,6 +325,7 @@ static int process_eap_request_srp_server_validator(struct eapsrp_ctx *ctx, uint
 		ctx->authentication_state = EAP_AUTH_STATE_SUCCESS;
 		ctx->last_auth_timestamp = timestampNTP_u64();
 		ctx->tries = 0;
+		ctx->failed_state_timestamp = 0;
 		uint8_t outpkt[(EAPOL_EAP_HDRS_OFFSET + sizeof(struct eap_srp_hdr))] = {0};
 		struct eap_srp_hdr *hdr = (struct eap_srp_hdr *)&outpkt[EAPOL_EAP_HDRS_OFFSET];
 		if (ctx->eapversion3) {
@@ -308,7 +339,7 @@ static int process_eap_request_srp_server_validator(struct eapsrp_ctx *ctx, uint
 	}
 	//perm failure
 	ctx->authentication_state = EAP_AUTH_STATE_FAILED;
-	ctx->tries = 255;
+	ctx->tries = EAP_AUTH_TRIES_PERMANENT;
 
 	return -1;
 }
@@ -356,6 +387,8 @@ static int process_eap_request(struct eapsrp_ctx *ctx, uint8_t pkt[], size_t len
 {
 	if (len < 1)
 		return EAP_LENERR;
+	/* Record in-flight identifier for FAILURE matching. */
+	ctx->last_identifier = identifier;
 	uint8_t type = pkt[0];
 	if (type == EAP_TYPE_IDENTITY)
 		return process_eap_request_identity(ctx, identifier);
@@ -488,7 +521,7 @@ static int process_eap_response_client_key(struct eapsrp_ctx *ctx, size_t len, u
 
 	if (librist_crypto_srp_authenticator_handle_A(ctx->auth_ctx, pkt, len) != 0) {
 		ctx->authentication_state = EAP_AUTH_STATE_FAILED;
-		ctx->tries = 255;
+		ctx->tries = EAP_AUTH_TRIES_PERMANENT;
 		return EAP_AUTH_TERMINATED;
 	}
 
@@ -516,7 +549,7 @@ static int process_eap_response_client_validator(struct eapsrp_ctx *ctx, size_t 
 	if (librist_crypto_srp_authenticator_verify_m1(ctx->auth_ctx, ctx->config.username, &pkt[4]) != 0) {
 		rist_log_priv2(ctx->config.logging_settings, RIST_LOG_WARN, EAP_LOG_PREFIX"Authentication failed for %s@%s\n", ctx->config.username, ctx->ip_string);
 		ctx->authentication_state = EAP_AUTH_STATE_FAILED;
-		ctx->tries++;
+		eap_tries_inc(ctx);
 		int ret = EAP_AUTH_FAILED;
 		if (ctx->tries > EAP_AUTH_RETRY_MAX) {
 			rist_log_priv2(ctx->config.logging_settings, RIST_LOG_ERROR, EAP_LOG_PREFIX"Authentication retry count exceeded\n");
@@ -561,6 +594,7 @@ static int process_eap_response_srp_server_validator(struct eapsrp_ctx *ctx)
 		ctx->authentication_state = EAP_AUTH_STATE_SUCCESS;
 		ctx->last_auth_timestamp = timestampNTP_u64();
 		ctx->tries = 0;
+		ctx->failed_state_timestamp = 0;
 		ctx->last_identifier++;
 	}
 	return 0;
@@ -708,12 +742,20 @@ static int process_eap_pkt(struct eapsrp_ctx *ctx, uint8_t pkt[], size_t len, ui
 			return process_eap_succes(ctx, identifier);
 			break;
 		case EAP_CODE_FAILURE:
+			/* Drop FAILUREs whose identifier doesn't match the in-flight exchange. */
+			if (identifier != ctx->last_identifier) {
+				rist_log_priv2(ctx->config.logging_settings, RIST_LOG_DEBUG,
+					EAP_LOG_PREFIX"Dropping FAILURE with stale identifier %u (expected %u)\n",
+					identifier, ctx->last_identifier);
+				return 0;
+			}
 			// rate-limit, otherwise a spoofed FAILURE can loop us forever
-			ctx->tries++;
+			eap_tries_inc(ctx);
 			eap_reset_data(ctx);
 			rist_log_priv2(ctx->config.logging_settings, RIST_LOG_ERROR, EAP_LOG_PREFIX"Authentication failed\n");
 			if (ctx->tries > EAP_AUTH_RETRY_MAX) {
 				ctx->authentication_state = EAP_AUTH_STATE_FAILED;
+				ctx->failed_state_timestamp = timestampNTP_u64();
 				return EAP_AUTH_TERMINATED;
 			}
 			return _librist_proto_eap_start(ctx);//try to restart the process
@@ -812,7 +854,14 @@ int eap_process_eapol(struct eapsrp_ctx* ctx, uint8_t pkt[], size_t len)
 				ret = 0;
 			break;
 		case EAPOL_TYPE_LOGOFF:
+			/* Refuse LOGOFF once authenticated; re-auth runs from eap_periodic. */
+			if (ctx->authentication_state >= EAP_AUTH_STATE_SUCCESS) {
+				ret = EAP_UNEXPECTEDREQUEST;
+				break;
+			}
 			ctx->authentication_state = EAP_AUTH_STATE_UNAUTH;
+			ctx->tries = 0;
+			ctx->failed_state_timestamp = 0;
 			ret = 0;
 			break;
 		default:
@@ -902,6 +951,19 @@ static void eap_periodic_impl(struct eapsrp_ctx *ctx)
 	if (ctx->authentication_state == EAP_AUTH_STATE_REAUTH && now > reauth_time_out) {
 		ctx->authentication_state = EAP_AUTH_STATE_UNAUTH;
 		return;
+	}
+	/* Soft-FAILED (tries bumped past max but not parked at PERMANENT) -> UNAUTH after quiet. */
+	if (ctx->authentication_state == EAP_AUTH_STATE_FAILED &&
+	    ctx->tries > EAP_AUTH_RETRY_MAX &&
+	    ctx->tries < EAP_AUTH_TRIES_PERMANENT &&
+	    ctx->failed_state_timestamp != 0 &&
+	    now > ctx->failed_state_timestamp + (uint64_t)EAP_AUTH_FAILED_RECOVERY * RIST_CLOCK) {
+		rist_log_priv2(ctx->config.logging_settings, RIST_LOG_INFO,
+			EAP_LOG_PREFIX"Recovered from soft FAILED state after %d ms of quiet\n",
+			EAP_AUTH_FAILED_RECOVERY);
+		ctx->tries = 0;
+		ctx->failed_state_timestamp = 0;
+		ctx->authentication_state = EAP_AUTH_STATE_UNAUTH;
 	}
 }
 void eap_periodic(struct eapsrp_ctx *ctx) {

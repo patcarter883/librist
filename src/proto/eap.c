@@ -35,6 +35,7 @@
 #define EAP_AUTH_TIMEOUT_RETRY_MAX 5
 #define EAP_AUTH_TIMEOUT 500//ms
 #define EAP_REAUTH_PERIOD 60000 // ms
+#define EAP_AUTH_FAILED_RECOVERY 30000 // ms, soft-FAILED -> UNAUTH after this quiet
 
 /* Permanent-failure sentinel for ctx->tries; fixed point under eap_tries_inc(). */
 #define EAP_AUTH_TRIES_PERMANENT UINT_MAX
@@ -61,6 +62,8 @@ struct eapsrp_ctx
     unsigned int tries;
     bool may_rollover_passphrase;
     bool did_first_auth;
+
+    uint64_t failed_state_timestamp; /* 0 = not in soft-FAILED */
 
     uint64_t passphrase_request_timer;
     int passphrase_request_times;
@@ -306,6 +309,7 @@ static int process_eap_request_srp_server_validator(struct eapsrp_ctx *ctx, uint
 		ctx->authentication_state = EAP_AUTH_STATE_SUCCESS;
 		ctx->last_auth_timestamp = timestampNTP_u64();
 		ctx->tries = 0;
+		ctx->failed_state_timestamp = 0;
 		uint8_t outpkt[(EAPOL_EAP_HDRS_OFFSET + sizeof(struct eap_srp_hdr))] = {0};
 		struct eap_srp_hdr *hdr = (struct eap_srp_hdr *)&outpkt[EAPOL_EAP_HDRS_OFFSET];
 		if (ctx->eapversion3) {
@@ -367,6 +371,8 @@ static int process_eap_request(struct eapsrp_ctx *ctx, uint8_t pkt[], size_t len
 {
 	if (len < 1)
 		return EAP_LENERR;
+	/* Record in-flight identifier for FAILURE matching. */
+	ctx->last_identifier = identifier;
 	uint8_t type = pkt[0];
 	if (type == EAP_TYPE_IDENTITY)
 		return process_eap_request_identity(ctx, identifier);
@@ -572,6 +578,7 @@ static int process_eap_response_srp_server_validator(struct eapsrp_ctx *ctx)
 		ctx->authentication_state = EAP_AUTH_STATE_SUCCESS;
 		ctx->last_auth_timestamp = timestampNTP_u64();
 		ctx->tries = 0;
+		ctx->failed_state_timestamp = 0;
 		ctx->last_identifier++;
 	}
 	return 0;
@@ -719,12 +726,20 @@ static int process_eap_pkt(struct eapsrp_ctx *ctx, uint8_t pkt[], size_t len, ui
 			return process_eap_succes(ctx, identifier);
 			break;
 		case EAP_CODE_FAILURE:
+			/* Drop FAILUREs whose identifier doesn't match the in-flight exchange. */
+			if (identifier != ctx->last_identifier) {
+				rist_log_priv2(ctx->config.logging_settings, RIST_LOG_DEBUG,
+					EAP_LOG_PREFIX"Dropping FAILURE with stale identifier %u (expected %u)\n",
+					identifier, ctx->last_identifier);
+				return 0;
+			}
 			// rate-limit, otherwise a spoofed FAILURE can loop us forever
 			eap_tries_inc(ctx);
 			eap_reset_data(ctx);
 			rist_log_priv2(ctx->config.logging_settings, RIST_LOG_ERROR, EAP_LOG_PREFIX"Authentication failed\n");
 			if (ctx->tries > EAP_AUTH_RETRY_MAX) {
 				ctx->authentication_state = EAP_AUTH_STATE_FAILED;
+				ctx->failed_state_timestamp = timestampNTP_u64();
 				return EAP_AUTH_TERMINATED;
 			}
 			return _librist_proto_eap_start(ctx);//try to restart the process
@@ -830,6 +845,7 @@ int eap_process_eapol(struct eapsrp_ctx* ctx, uint8_t pkt[], size_t len)
 			}
 			ctx->authentication_state = EAP_AUTH_STATE_UNAUTH;
 			ctx->tries = 0;
+			ctx->failed_state_timestamp = 0;
 			ret = 0;
 			break;
 		default:
@@ -919,6 +935,19 @@ static void eap_periodic_impl(struct eapsrp_ctx *ctx)
 	if (ctx->authentication_state == EAP_AUTH_STATE_REAUTH && now > reauth_time_out) {
 		ctx->authentication_state = EAP_AUTH_STATE_UNAUTH;
 		return;
+	}
+	/* Soft-FAILED (tries bumped past max but not parked at PERMANENT) -> UNAUTH after quiet. */
+	if (ctx->authentication_state == EAP_AUTH_STATE_FAILED &&
+	    ctx->tries > EAP_AUTH_RETRY_MAX &&
+	    ctx->tries < EAP_AUTH_TRIES_PERMANENT &&
+	    ctx->failed_state_timestamp != 0 &&
+	    now > ctx->failed_state_timestamp + (uint64_t)EAP_AUTH_FAILED_RECOVERY * RIST_CLOCK) {
+		rist_log_priv2(ctx->config.logging_settings, RIST_LOG_INFO,
+			EAP_LOG_PREFIX"Recovered from soft FAILED state after %d ms of quiet\n",
+			EAP_AUTH_FAILED_RECOVERY);
+		ctx->tries = 0;
+		ctx->failed_state_timestamp = 0;
+		ctx->authentication_state = EAP_AUTH_STATE_UNAUTH;
 	}
 }
 void eap_periodic(struct eapsrp_ctx *ctx) {

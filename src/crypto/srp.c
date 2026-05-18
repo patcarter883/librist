@@ -115,7 +115,11 @@ void librist_crypto_srp_mbedtls_hash_init(HASH_CONTEXT *ctx, bool correct_init) 
 #define BIGNUM_GET_BINARY_SIZE(num) ((mpz_sizeinbase(num, 2) +7) /8)
 #define BIGNUM_FROM_ARRAY(num, array, size) mpz_import(num, size, 1, 1, 0, 0, array)
 #define BIGNUM_FROM_STRING(num, str) ret = mpz_set_str(num, str, 16)
-#define BIGNUM_RANDOM(num, max) nettle_mpz_random(num, NULL, _librist_srp_nettle_wrap_random, max);
+/* Pass &ret as the void* context so the wrapper can signal CSPRNG failure. */
+#define BIGNUM_RANDOM(num, max) do { \
+    ret = 0; \
+    nettle_mpz_random(num, &ret, _librist_srp_nettle_wrap_random, max); \
+} while (0)
 #define BIGNUM_MOD_RED(out, a, b) mpz_mod(out, a, b)
 #define BIGNUM_EXP_MOD(out, base, exp, mod) mpz_powm(out, base, exp, mod)
 #define BIGNUM_MULT_BIG(prod, a, b) mpz_mul(prod, a, b)
@@ -141,9 +145,17 @@ void librist_crypto_srp_mbedtls_hash_init(HASH_CONTEXT *ctx, bool correct_init) 
 #define HASH_CONTEXT_INIT(ctx, correct) (void)(correct); nettle_sha256_init(ctx)
 #define HASH_CONTEXT_FREE(ctx)
 
-void _librist_srp_nettle_wrap_random(void *unused, size_t size, uint8_t* buf) {
-	RIST_MARK_UNUSED(unused);
-	_librist_crypto_ramdom_get_bytes(buf, size);
+void _librist_srp_nettle_wrap_random(void *err_out, size_t size, uint8_t* buf) {
+	/* Nettle's callback returns void; we route CSPRNG failure through
+	 * the caller's int* (passed via the otherwise-unused ctx arg) and
+	 * zero the buffer so a missed return check feeds SRP a value that
+	 * its mod-N checks will reject. */
+	int *err = (int *)err_out;
+	if (_librist_crypto_ramdom_get_bytes(buf, size) != 0) {
+		memset(buf, 0, size);
+		if (err)
+			*err = -1;
+	}
 }
 
 #endif
@@ -952,7 +964,8 @@ int librist_crypto_srp_create_verifier(
 #if HAVE_MBEDTLS
 	ret = mbedtls_mpi_fill_random(&s, 32, _librist_srp_mbedtls_wrap_random, NULL);
 #elif HAVE_NETTLE
-	nettle_mpz_random_size(&s, NULL, _librist_srp_nettle_wrap_random, 8 * 32);
+	ret = 0;
+	nettle_mpz_random_size(&s, &ret, _librist_srp_nettle_wrap_random, 8 * 32);
 #endif
 	if (ret != 0)
 		goto failed;

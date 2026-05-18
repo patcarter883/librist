@@ -26,6 +26,7 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include <assert.h>
+#include <limits.h>
 
 #define HASH_ALGO SRP_SHA256
 #define DIGEST_LENGTH SHA256_DIGEST_LENGTH
@@ -34,6 +35,9 @@
 #define EAP_AUTH_TIMEOUT_RETRY_MAX 5
 #define EAP_AUTH_TIMEOUT 500//ms
 #define EAP_REAUTH_PERIOD 60000 // ms
+
+/* Permanent-failure sentinel for ctx->tries; fixed point under eap_tries_inc(). */
+#define EAP_AUTH_TRIES_PERMANENT UINT_MAX
 
 static int eap_request_passphrase(struct eapsrp_ctx *ctx, bool start);
 
@@ -54,7 +58,7 @@ struct eapsrp_ctx
 
     int authentication_state;
     uint8_t last_identifier;
-    uint8_t tries;
+    unsigned int tries;
     bool may_rollover_passphrase;
     bool did_first_auth;
 
@@ -100,6 +104,13 @@ struct eapsrp_ctx
 
 	bool eapversion3;//EAPv3 signalled. old libRIST used v2, so use this to ensure compat with broken hashing
 };
+
+static inline void eap_tries_inc(struct eapsrp_ctx *ctx)
+{
+	/* Saturating: stays parked at EAP_AUTH_TRIES_PERMANENT instead of wrapping. */
+	if (ctx->tries < EAP_AUTH_TRIES_PERMANENT)
+		ctx->tries++;
+}
 
 void eap_reset_data(struct eapsrp_ctx *ctx)
 {
@@ -253,7 +264,7 @@ static int process_eap_request_srp_server_key(struct eapsrp_ctx *ctx, uint8_t id
 	{
 		ctx->authentication_state = EAP_AUTH_STATE_FAILED;
 		//"must disconnect immediately, set tries past limit"
-		ctx->tries = 255;
+		ctx->tries = EAP_AUTH_TRIES_PERMANENT;
 		return EAP_AUTH_TERMINATED;
 	}
 	size_t out_len = sizeof(struct eap_srp_hdr) + 4 + DIGEST_LENGTH;
@@ -308,7 +319,7 @@ static int process_eap_request_srp_server_validator(struct eapsrp_ctx *ctx, uint
 	}
 	//perm failure
 	ctx->authentication_state = EAP_AUTH_STATE_FAILED;
-	ctx->tries = 255;
+	ctx->tries = EAP_AUTH_TRIES_PERMANENT;
 
 	return -1;
 }
@@ -488,7 +499,7 @@ static int process_eap_response_client_key(struct eapsrp_ctx *ctx, size_t len, u
 
 	if (librist_crypto_srp_authenticator_handle_A(ctx->auth_ctx, pkt, len) != 0) {
 		ctx->authentication_state = EAP_AUTH_STATE_FAILED;
-		ctx->tries = 255;
+		ctx->tries = EAP_AUTH_TRIES_PERMANENT;
 		return EAP_AUTH_TERMINATED;
 	}
 
@@ -516,7 +527,7 @@ static int process_eap_response_client_validator(struct eapsrp_ctx *ctx, size_t 
 	if (librist_crypto_srp_authenticator_verify_m1(ctx->auth_ctx, ctx->config.username, &pkt[4]) != 0) {
 		rist_log_priv2(ctx->config.logging_settings, RIST_LOG_WARN, EAP_LOG_PREFIX"Authentication failed for %s@%s\n", ctx->config.username, ctx->ip_string);
 		ctx->authentication_state = EAP_AUTH_STATE_FAILED;
-		ctx->tries++;
+		eap_tries_inc(ctx);
 		int ret = EAP_AUTH_FAILED;
 		if (ctx->tries > EAP_AUTH_RETRY_MAX) {
 			rist_log_priv2(ctx->config.logging_settings, RIST_LOG_ERROR, EAP_LOG_PREFIX"Authentication retry count exceeded\n");
@@ -709,7 +720,7 @@ static int process_eap_pkt(struct eapsrp_ctx *ctx, uint8_t pkt[], size_t len, ui
 			break;
 		case EAP_CODE_FAILURE:
 			// rate-limit, otherwise a spoofed FAILURE can loop us forever
-			ctx->tries++;
+			eap_tries_inc(ctx);
 			eap_reset_data(ctx);
 			rist_log_priv2(ctx->config.logging_settings, RIST_LOG_ERROR, EAP_LOG_PREFIX"Authentication failed\n");
 			if (ctx->tries > EAP_AUTH_RETRY_MAX) {
@@ -812,7 +823,13 @@ int eap_process_eapol(struct eapsrp_ctx* ctx, uint8_t pkt[], size_t len)
 				ret = 0;
 			break;
 		case EAPOL_TYPE_LOGOFF:
+			/* Refuse LOGOFF once authenticated; re-auth runs from eap_periodic. */
+			if (ctx->authentication_state >= EAP_AUTH_STATE_SUCCESS) {
+				ret = EAP_UNEXPECTEDREQUEST;
+				break;
+			}
 			ctx->authentication_state = EAP_AUTH_STATE_UNAUTH;
+			ctx->tries = 0;
 			ret = 0;
 			break;
 		default:

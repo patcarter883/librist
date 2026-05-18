@@ -36,6 +36,7 @@
 #define EAP_AUTH_TIMEOUT 500//ms
 #define EAP_REAUTH_PERIOD 60000 // ms
 #define EAP_AUTH_FAILED_RECOVERY 30000 // ms, soft-FAILED -> UNAUTH after this quiet
+#define EAP_IDENTITY_REPLY_INTERVAL 200 // ms, rate-limit pre-auth IDENTITY replies
 
 /* Permanent-failure sentinel for ctx->tries; fixed point under eap_tries_inc(). */
 #define EAP_AUTH_TRIES_PERMANENT UINT_MAX
@@ -64,6 +65,7 @@ struct eapsrp_ctx
     bool did_first_auth;
 
     uint64_t failed_state_timestamp; /* 0 = not in soft-FAILED */
+    uint64_t last_identity_reply_timestamp; /* rate-limit pre-auth IDENTITY replies */
 
     uint64_t passphrase_request_timer;
     int passphrase_request_times;
@@ -179,12 +181,21 @@ static int send_eapol_pkt(struct eapsrp_ctx *ctx, uint8_t eapoltype, uint8_t eap
 //EAP REQUEST HANDLING
 static int process_eap_request_identity(struct eapsrp_ctx *ctx, uint8_t identifier)
 {
-	/* Don't tear down an established session on a spoofed identity request:
-	 * once we're authenticated, a forged EAP_REQUEST_IDENTITY can only ask us
-	 * to start over, which is what the attacker wants.  Re-auth is driven by
-	 * the timers in eap_periodic. */
+	if (ctx->config.role == EAP_ROLE_AUTHENTICATOR)
+		return EAP_UNEXPECTEDREQUEST;
+	/* Refuse pre-auth resets once authenticated; re-auth runs from eap_periodic. */
 	if (ctx->authentication_state >= EAP_AUTH_STATE_SUCCESS)
 		return EAP_UNEXPECTEDREQUEST;
+	/* Rate-limit pre-auth replies (caps username echo + eap_reset_data work). */
+	uint64_t now = timestampNTP_u64();
+	if (ctx->last_identity_reply_timestamp != 0 &&
+	    now < ctx->last_identity_reply_timestamp + (uint64_t)EAP_IDENTITY_REPLY_INTERVAL * RIST_CLOCK) {
+		rist_log_priv2(ctx->config.logging_settings, RIST_LOG_DEBUG,
+			EAP_LOG_PREFIX"Rate-limiting EAP IDENTITY response (last sent %u ms ago)\n",
+			(unsigned)((now - ctx->last_identity_reply_timestamp) / RIST_CLOCK));
+		return 0;
+	}
+	ctx->last_identity_reply_timestamp = now;
 	eap_reset_data(ctx);
 	uint8_t eapolpkt[512];
 	size_t offset = EAPOL_EAP_HDRS_OFFSET;

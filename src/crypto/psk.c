@@ -198,16 +198,17 @@ static void _librist_crypto_psk_aes_ctr(struct rist_key *key, const uint8_t inbu
 #elif HAVE_NETTLE
 	nettle_cipher_func *f;
 	switch(key->key_size) {
-	case 256:
-		f = (nettle_cipher_func *)nettle_aes256_encrypt;
+	case 128:
+		f = (nettle_cipher_func *)nettle_aes128_encrypt;
 		break;
 	case 192:
 		f = (nettle_cipher_func *)nettle_aes192_encrypt;
 		break;
-	case 128:
-		RIST_FALLTHROUGH;
+	case 256:
+		f = (nettle_cipher_func *)nettle_aes256_encrypt;
+		break;
 	default:
-		f = (nettle_cipher_func *)nettle_aes128_encrypt;
+		return;
 	}
 	nettle_ctr_crypt(&key->nettle_ctx.u, f, AES_BLOCK_SIZE, key->iv,payload_len, outbuf, inbuf);
 #elif defined(LINUX_CRYPTO)

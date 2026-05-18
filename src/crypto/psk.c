@@ -272,17 +272,13 @@ void _librist_crypto_psk_decrypt(struct rist_key *key, uint8_t nonce[4], uint32_
     }
 
     if (memcmp(nonce, key->gre_nonce, sizeof(key->gre_nonce)) != 0) {
-        /* Once the lockout fires we keep it set across nonce rolls so a
-         * peer cannot escape the bad-packet cap by cycling nonces.
-         * bad_decryption / bad_count are only cleared by a successful
-         * decrypt + RTP validation upstream, or by passphrase rotation. */
-        bool was_locked = key->bad_decryption;
+        /* Skip PBKDF2 + rekey while locked out. */
+        if (key->bad_decryption)
+            return;
         memcpy(key->gre_nonce, nonce, sizeof(key->gre_nonce));
         _librist_crypto_aes_key(key);
-        if (!was_locked) {
-            key->bad_decryption = false;
-            key->bad_count = 0;
-        }
+        key->bad_decryption = false;
+        key->bad_count = 0;
     }
 
     if (key->used_times > RIST_AES_KEY_REUSE_TIMES) {

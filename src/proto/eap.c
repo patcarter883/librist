@@ -37,6 +37,7 @@
 #define EAP_REAUTH_PERIOD 60000 // ms
 #define EAP_AUTH_FAILED_RECOVERY 30000 // ms, soft-FAILED -> UNAUTH after this quiet
 #define EAP_IDENTITY_REPLY_INTERVAL 200 // ms, rate-limit pre-auth IDENTITY replies
+#define EAP_MAX_MODULUS_BYTES 1024 // largest RFC 5054 group (NG_8192) is 1024 bytes
 
 /* Permanent-failure sentinel for ctx->tries; fixed point under eap_tries_inc(). */
 #define EAP_AUTH_TRIES_PERMANENT UINT_MAX
@@ -252,11 +253,15 @@ static int process_eap_request_srp_challenge(struct eapsrp_ctx *ctx, uint8_t ide
 	{
 		if (generator_len > len - offset)
 			return EAP_LENERR;
+		if (generator_len > EAP_MAX_MODULUS_BYTES)
+			return EAP_LENERR;
 
 		g = &pkt[offset];
 		offset += generator_len;
 		N = &pkt[offset];
 		N_len = len - offset;
+		if (N_len > EAP_MAX_MODULUS_BYTES)
+			return EAP_LENERR;
 	}
 	librist_crypto_srp_client_ctx_free(ctx->client_ctx);
 	ctx->client_ctx = librist_crypto_srp_client_ctx_create(use_default_2048, N, N_len, g, generator_len, salt, salt_len, ctx->eapversion3);

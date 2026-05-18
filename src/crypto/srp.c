@@ -45,10 +45,8 @@ static void print_hash(const uint8_t *buf, char *specifier) {
 #include <mbedtls/sha256.h>
 #include <mbedtls/version.h>
 
-#if MBEDTLS_VERSION_NUMBER > 0x02070000
-#define USE_SHA_RET 1
-#else
-#define USE_SHA_RET 0
+#if MBEDTLS_VERSION_NUMBER < 0x02070000
+#error "librist requires mbedTLS >= 2.7 (the *_ret SHA-256 API). Upgrade your mbedTLS or build with the bundled copy in contrib/mbedtls."
 #endif
 
 #if MBEDTLS_VERSION_NUMBER >= 0x03000000
@@ -95,11 +93,7 @@ int _librist_srp_mbedtls_wrap_random(void *unused, unsigned char * buf, size_t s
 void librist_crypto_srp_mbedtls_hash_init(HASH_CONTEXT *ctx, bool correct_init) {
     mbedtls_sha256_init(ctx);
 	if (correct_init) {
-#if USE_SHA_RET
 		mbedtls_sha256_starts_ret(ctx, 0);
-#else
-		mbedtls_sha256_starts(ctx, 0);
-#endif
 	}
 }
 
@@ -163,11 +157,7 @@ void _librist_srp_nettle_wrap_random(void *err_out, size_t size, uint8_t* buf) {
 static int librist_crypto_srp_hash_update(HASH_CONTEXT *hash_ctx, const void *data, size_t len)
 {
 #if HAVE_MBEDTLS
-#if !USE_SHA_RET
-	mbedtls_sha256_update( hash_ctx, data, len );
-#else
 	return mbedtls_sha256_update_ret( hash_ctx, data, len );
-#endif
 #else
 	nettle_sha256_update( hash_ctx, len, data);
 	return 0;
@@ -188,32 +178,24 @@ static int librist_crypto_srp_hash_update_bignum(HASH_CONTEXT *hash_ctx, const B
 static int librist_crypto_srp_hash_final(HASH_CONTEXT *hash_ctx, uint8_t *data)
 {
 #if HAVE_MBEDTLS
-#if !USE_SHA_RET
-	mbedtls_sha256_finish( hash_ctx, data);
-#else
 	return mbedtls_sha256_finish_ret( hash_ctx, data);
-#endif
 #else
 	nettle_sha256_digest( hash_ctx, SHA256_DIGEST_LENGTH, data);
-#endif
 	return 0;
+#endif
 }
 
 static int librist_crypto_srp_hash(const uint8_t *indata, size_t inlen, uint8_t outdata[SHA256_DIGEST_LENGTH])
 {
 #if HAVE_MBEDTLS
-#if !USE_SHA_RET
-	mbedtls_sha256(indata, inlen, outdata, 0);
-#else
 	return mbedtls_sha256_ret(indata, inlen, outdata, 0);
-#endif
 #else
 	HASH_CONTEXT hash_ctx;
 	HASH_CONTEXT_INIT(&hash_ctx, true);
 	librist_crypto_srp_hash_update(&hash_ctx, indata, inlen);
 	librist_crypto_srp_hash_final(&hash_ctx, outdata);
-#endif
 	return 0;
+#endif
 }
 
 //Calculates the value of x as follows: x = SHA256(s, SHA256(I | “:” | P))

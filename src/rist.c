@@ -911,6 +911,8 @@ int rist_peer_config_defaults_set(struct rist_peer_config *peer_config)
 		peer_config->congestion_control_mode = RIST_DEFAULT_CONGESTION_CONTROL_MODE;
 		peer_config->min_retries = RIST_DEFAULT_MIN_RETRIES;
 		peer_config->max_retries = RIST_DEFAULT_MAX_RETRIES;
+		peer_config->split_mode = LIBRIST_SPLIT_MODE_OFF;
+		peer_config->merge_mode = LIBRIST_MERGE_MODE_OFF;
 		return 0;
 	}
 	else
@@ -956,6 +958,17 @@ static int rist_receiver_peer_create(struct rist_receiver *ctx,
 	struct rist_peer *p = rist_receiver_peer_insert_local(ctx, config);
 	if (!p)
 		return -1;
+
+	if (config->version >= 1) {
+		if (ctx->common.PEERS == NULL) {
+			ctx->merge_mode = config->merge_mode;
+		} else if (ctx->merge_mode != config->merge_mode) {
+			rist_log_priv(&ctx->common, RIST_LOG_WARN,
+				"peer added with merge_mode=%u but the receiver is already "
+				"running with merge_mode=%u; new peer's merge config ignored\n",
+				config->merge_mode, ctx->merge_mode);
+		}
+	}
 
 	p->peer_ssrc = prand_u32();
 	if (ctx->common.profile == RIST_PROFILE_SIMPLE)
@@ -1009,6 +1022,23 @@ static int rist_sender_peer_create(struct rist_sender *ctx,
 
 	if (!newpeer)
 		return -1;
+
+	if (config->version >= 1) {
+		if (ctx->peer_lst_len == 0) {
+			ctx->split_mode = config->split_mode;
+		} else if (ctx->split_mode != config->split_mode) {
+			rist_log_priv(&ctx->common, RIST_LOG_WARN,
+				"peer added with split_mode=%u but the session is already "
+				"running with split_mode=%u; new peer's split config ignored\n",
+				config->split_mode, ctx->split_mode);
+		}
+		if (ctx->split_mode == LIBRIST_SPLIT_MODE_HALF) {
+			rist_log_priv(&ctx->common, RIST_LOG_WARN,
+				"split=half is active; the receiver MUST be configured with "
+				"merge=pairs or merge=auto, otherwise downstream consumers "
+				"will see runt payloads.\n");
+		}
+	}
 
 	// TODO: Validate config data (virt_dst_port != 0 for example)
 

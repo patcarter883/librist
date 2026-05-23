@@ -413,6 +413,11 @@ struct rist_receiver {
 	bool simulate_loss;
 	uint16_t loss_percentage;
 	uint32_t fifo_queue_size;
+
+	uint32_t merge_mode;
+	uint64_t stats_pairs_merged;
+	uint64_t stats_orphan_first_delivered;
+	uint64_t stats_orphan_last_delivered;
 };
 
 struct rist_sender {
@@ -423,6 +428,10 @@ struct rist_sender {
 	uint32_t recovery_maxbitrate_max;
 	uint32_t max_nacksperloop;
 	bool null_packet_suppression;
+
+	uint32_t split_mode;
+	uint64_t stats_pairs_emitted;
+	uint64_t stats_split_fallback_not_ts;
 
 	/* Sender thread variables */
 	bool protocol_running;

@@ -251,6 +251,30 @@ int parse_url_options(const char* url, struct rist_peer_config *output_peer_conf
 				int temp = atoi( val );
 				if (temp > 0)
 					output_peer_config->max_retries = temp;
+			} else if (output_peer_config->version >= 1 &&
+			           strcmp( url_params[i].key, RIST_URL_PARAM_SPLIT_MODE ) == 0) {
+				if (strcmp(val, "off") == 0)
+					output_peer_config->split_mode = LIBRIST_SPLIT_MODE_OFF;
+				else if (strcmp(val, "auto") == 0 || strcmp(val, "ts") == 0)
+					output_peer_config->split_mode = LIBRIST_SPLIT_MODE_AUTO;
+				else if (strcmp(val, "half") == 0)
+					output_peer_config->split_mode = LIBRIST_SPLIT_MODE_HALF;
+				else {
+					ret = -1;
+					fprintf(stderr, "Unknown split mode '%s'; expected off|auto|half\n", val);
+				}
+			} else if (output_peer_config->version >= 1 &&
+			           strcmp( url_params[i].key, RIST_URL_PARAM_MERGE_MODE ) == 0) {
+				if (strcmp(val, "off") == 0)
+					output_peer_config->merge_mode = LIBRIST_MERGE_MODE_OFF;
+				else if (strcmp(val, "pairs") == 0)
+					output_peer_config->merge_mode = LIBRIST_MERGE_MODE_PAIRS;
+				else if (strcmp(val, "auto") == 0)
+					output_peer_config->merge_mode = LIBRIST_MERGE_MODE_AUTO;
+				else {
+					ret = -1;
+					fprintf(stderr, "Unknown merge mode '%s'; expected off|auto|pairs\n", val);
+				}
 			} else {
 				ret = -1;
 				fprintf(stderr, "Unknown or invalid parameter %s\n", url_params[i].key);

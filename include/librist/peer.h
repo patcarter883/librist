@@ -63,7 +63,21 @@ enum rist_congestion_control_mode
 	RIST_CONGESTION_CONTROL_MODE_AGGRESSIVE = 2
 };
 
-#define RIST_PEER_CONFIG_VERSION (0)
+enum librist_split_mode
+{
+	LIBRIST_SPLIT_MODE_OFF  = 0,
+	LIBRIST_SPLIT_MODE_AUTO = 1,
+	LIBRIST_SPLIT_MODE_HALF = 2,
+};
+
+enum librist_merge_mode
+{
+	LIBRIST_MERGE_MODE_OFF   = 0,
+	LIBRIST_MERGE_MODE_PAIRS = 1,
+	LIBRIST_MERGE_MODE_AUTO  = 2,
+};
+
+#define RIST_PEER_CONFIG_VERSION (1)
 
 struct rist_peer_config
 {
@@ -118,6 +132,9 @@ struct rist_peer_config
 	enum rist_timing_mode timing_mode;
 	char srp_username[RIST_MAX_STRING_LONG];
 	char srp_password[RIST_MAX_STRING_LONG];
+
+	uint32_t split_mode;      /* enum librist_split_mode (sender) */
+	uint32_t merge_mode;      /* enum librist_merge_mode (receiver) */
 };
 
 /**

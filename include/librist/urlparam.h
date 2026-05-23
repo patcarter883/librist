@@ -46,6 +46,8 @@
 /* Rist additional parameter names */
 #define RIST_URL_PARAM_VIRT_SRC_PORT "virt-src-port"
 #define RIST_URL_PARAM_PROFILE "profile"
+#define RIST_URL_PARAM_SPLIT_MODE "split"
+#define RIST_URL_PARAM_MERGE_MODE "merge"
 #define RIST_URL_PARAM_VERBOSE_LEVEL "verbose-level"
 #define RIST_URL_PARAM_RTT_MULTIPLIER "rtt-multiplier"
 

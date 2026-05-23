@@ -958,6 +958,7 @@ static void receiver_output(struct rist_receiver *ctx, struct rist_flow *f)
 					holes, counter, atomic_load_explicit(&f->receiver_queue_size, memory_order_acquire));
 		}
 		if (b) {
+			bool merged = false;
 			if (b->type == RIST_PAYLOAD_TYPE_DATA_RAW) {
 
 				now = timestampNTP_u64();
@@ -1020,12 +1021,65 @@ static void receiver_output(struct rist_receiver *ctx, struct rist_flow *f)
 						f->flag_flow_buffer_start = false;
 						flags |= RIST_DATA_FLAGS_FLOW_BUFFER_START;
 					}
-					/* insert into fifo queue */
-					uint8_t *payload = b->data;
-					struct rist_data_block *block = new_data_block(
-							NULL, b,
-							&payload[RIST_MAX_PAYLOAD_OFFSET], f->flow_id, flags);
-					b->data = NULL;
+
+					bool merge_active = (ctx->merge_mode == LIBRIST_MERGE_MODE_PAIRS) ||
+					                    (ctx->merge_mode == LIBRIST_MERGE_MODE_AUTO &&
+					                     f->merge_auto_enabled);
+
+					struct rist_data_block *block = NULL;
+
+					if (merge_active && (b->seq & 1) == 0) {
+						size_t partner_idx = (output_idx + 1) & (f->receiver_queue_max - 1);
+						struct rist_buffer *b2 = f->receiver_queue[partner_idx];
+						if (b2 && b2->type == RIST_PAYLOAD_TYPE_DATA_RAW &&
+						    b2->seq == ((b->seq + 1) & UINT16_MAX) &&
+						    b2->source_time == b->source_time) {
+							size_t combined_len = b->size + b2->size;
+							uint8_t *combined = malloc(RIST_MAX_PAYLOAD_OFFSET + combined_len);
+							if (combined) {
+								memcpy(combined + RIST_MAX_PAYLOAD_OFFSET,
+								       b->data + RIST_MAX_PAYLOAD_OFFSET, b->size);
+								memcpy(combined + RIST_MAX_PAYLOAD_OFFSET + b->size,
+								       b2->data + RIST_MAX_PAYLOAD_OFFSET, b2->size);
+								block = calloc(1, sizeof(*block));
+								if (block) {
+									block->ref = rist_ref_create(block);
+									block->peer = b->peer;
+									block->flow_id = f->flow_id;
+									block->payload = combined + RIST_MAX_PAYLOAD_OFFSET;
+									block->payload_len = combined_len;
+									block->virt_src_port = b->src_port;
+									block->virt_dst_port = b->dst_port;
+									block->ts_ntp = b->source_time;
+									block->seq = b->seq / 2;
+									block->flags = flags;
+									merged = true;
+									ctx->stats_pairs_merged++;
+								} else {
+									free(combined);
+								}
+							}
+							if (merged) {
+								b->data = NULL;
+								f->last_seq_output = b2->seq;
+								atomic_fetch_sub_explicit(&f->receiver_queue_size, b2->size, memory_order_relaxed);
+								f->receiver_queue[partner_idx] = NULL;
+								free_rist_buffer(&ctx->common, b2);
+							}
+						} else {
+							ctx->stats_orphan_first_delivered++;
+						}
+					} else if (merge_active && (b->seq & 1) == 1) {
+						ctx->stats_orphan_last_delivered++;
+					}
+
+					if (!merged) {
+						uint8_t *payload = b->data;
+						block = new_data_block(
+								NULL, b,
+								&payload[RIST_MAX_PAYLOAD_OFFSET], f->flow_id, flags);
+						b->data = NULL;
+					}
 					if (ctx->receiver_data_fd >= 0 && block) {
 						int written;
 						if (ctx->receiver_data_fd_flags & RIST_DATA_FD_FLAG_TUN)
@@ -1086,11 +1140,16 @@ static void receiver_output(struct rist_receiver *ctx, struct rist_flow *f)
 			//	fprintf(stderr, "rtcp skip at %"PRIu32", just removing it from queue\n", b->seq);
 
 next:
-			f->last_seq_output = b->seq;
+			if (!merged)
+				f->last_seq_output = b->seq;
 			atomic_fetch_sub_explicit(&f->receiver_queue_size, b->size, memory_order_relaxed);
 			f->receiver_queue[output_idx] = NULL;
 			free_rist_buffer(&ctx->common, b);
 			output_idx = (output_idx + 1)& (f->receiver_queue_max -1);
+			if (merged) {
+				/* partner already freed and NULLed above; skip its slot */
+				output_idx = (output_idx + 1) & (f->receiver_queue_max - 1);
+			}
 			atomic_store_explicit(&f->receiver_queue_output_idx, output_idx, memory_order_release);
 			if (atomic_load_explicit(&f->receiver_queue_size, memory_order_acquire) == 0) {
 				if (f->last_output_time == 0)

@@ -207,12 +207,12 @@ ssize_t _librist_proto_gre_send_data(struct rist_peer *p, uint8_t payload_type, 
 }
 
 void _librist_proto_gre_send_keepalive(struct rist_peer *p, uint8_t gre_version) {
-	/* Extended keep-alive: 8 bytes (Main Profile) + 4 bytes (capabilities3/4
-	 * for TR-06-3 C/G/I bits). Older receivers will ignore the extra bytes. */
 	uint8_t ka_buf[12] = {0};
 	struct rist_gre_keepalive *ka = (struct rist_gre_keepalive *)ka_buf;
 	memcpy(ka->mac_array, p->mac_addr, sizeof(ka->mac_array));
 	SET_BIT(ka->capabilities1, 0); // Null packet deletion
+	if (p->sender_ctx && p->sender_ctx->split_mode != LIBRIST_SPLIT_MODE_OFF)
+		SET_BIT(ka->capabilities1, 1); // Pair-split active
 	SET_BIT(ka->capabilities1, 2); // SMPTE-2022-7
 	SET_BIT(ka->capabilities1, 5); // Bonding
 	SET_BIT(ka->capabilities2, 5); // Reduced overhead

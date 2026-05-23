@@ -580,16 +580,82 @@ int rist_sender_data_write(struct rist_ctx *rist_ctx, const struct rist_data_blo
 		return -1;
 	}
 
-	uint64_t ts_ntp = data_block->ts_ntp == 0 ? timestampNTP_u64() : data_block->ts_ntp;
-	uint32_t seq_rtp;
-	if (data_block->flags & RIST_DATA_FLAGS_USE_SEQ)
-		seq_rtp = (uint32_t)data_block->seq;
-	else
-		seq_rtp = ctx->common.seq_rtp++;
-	//When we support 32bit seq this should be changed
-	seq_rtp = seq_rtp & (UINT16_MAX);
+	if (RIST_UNLIKELY((data_block->flags & RIST_DATA_FLAGS_USE_SEQ) &&
+	                  ctx->split_mode != LIBRIST_SPLIT_MODE_OFF)) {
+		rist_log_priv(&ctx->common, RIST_LOG_ERROR,
+			"RIST_DATA_FLAGS_USE_SEQ cannot be used with split mode; "
+			"the library must control the wire sequence for pair "
+			"splitting. Use ts_ntp to preserve source timestamps.\n");
+		return -1;
+	}
 
-	int ret = rist_sender_enqueue(ctx, data_block->payload, data_block->payload_len, ts_ntp, data_block->virt_src_port, data_block->virt_dst_port, seq_rtp);
+	uint64_t ts_ntp = data_block->ts_ntp == 0 ? timestampNTP_u64() : data_block->ts_ntp;
+
+	const uint8_t *payload_to_send = data_block->payload;
+	size_t payload_len = data_block->payload_len;
+
+	bool actually_split = (ctx->split_mode != LIBRIST_SPLIT_MODE_OFF);
+	size_t first_len = 0;
+	size_t last_len = 0;
+	if (actually_split) {
+		if (ctx->split_mode == LIBRIST_SPLIT_MODE_AUTO) {
+			const uint8_t *p = payload_to_send;
+			if (payload_len >= 2 * 188 && payload_len % 188 == 0 && p[0] == 0x47) {
+				size_t ts_count = payload_len / 188;
+				size_t first_ts = ts_count / 2;
+				if (first_ts == 0)
+					first_ts = 1;
+				first_len = first_ts * 188;
+				last_len = payload_len - first_len;
+			} else {
+				ctx->stats_split_fallback_not_ts++;
+				first_len = payload_len / 2;
+				last_len = payload_len - first_len;
+			}
+		} else {
+			first_len = payload_len / 2;
+			last_len = payload_len - first_len;
+		}
+	}
+
+	uint32_t seq_rtp_first;
+	uint32_t seq_rtp_last = 0;
+	if (data_block->flags & RIST_DATA_FLAGS_USE_SEQ) {
+		seq_rtp_first = (uint32_t)data_block->seq;
+	} else if (actually_split) {
+		if (ctx->common.seq_rtp & 1)
+			ctx->common.seq_rtp++;
+		seq_rtp_first = ctx->common.seq_rtp++;
+		seq_rtp_last = ctx->common.seq_rtp++;
+	} else {
+		seq_rtp_first = ctx->common.seq_rtp++;
+	}
+	seq_rtp_first &= UINT16_MAX;
+	seq_rtp_last &= UINT16_MAX;
+
+	int ret;
+	if (actually_split) {
+		ret = rist_sender_enqueue(ctx, payload_to_send, first_len, ts_ntp,
+		                          data_block->virt_src_port,
+		                          data_block->virt_dst_port, seq_rtp_first);
+		if (ret == 0) {
+			ret = rist_sender_enqueue(ctx, payload_to_send + first_len, last_len,
+			                          ts_ntp, data_block->virt_src_port,
+			                          data_block->virt_dst_port, seq_rtp_last);
+			if (ret == 0) {
+				ctx->stats_pairs_emitted++;
+			} else {
+				rist_log_priv(&ctx->common, RIST_LOG_WARN,
+					"Split write: first half (seq %u) enqueued but second "
+					"half (seq %u) failed (ret=%d); receiver will see an "
+					"orphan.\n", seq_rtp_first, seq_rtp_last, ret);
+			}
+		}
+	} else {
+		ret = rist_sender_enqueue(ctx, payload_to_send, payload_len, ts_ntp,
+		                          data_block->virt_src_port,
+		                          data_block->virt_dst_port, seq_rtp_first);
+	}
 	// Wake up data/nack output thread when data comes in
 	if (pthread_cond_signal(&ctx->condition))
 		rist_log_priv(&ctx->common, RIST_LOG_ERROR, "Call to pthread_cond_signal failed.\n");

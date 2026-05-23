@@ -392,14 +392,11 @@ struct rist_buffer *rist_new_buffer(struct rist_common_ctx *ctx, const void *buf
 		return NULL;
 	}
 
-	if (buf != NULL && len > 0)
-	{
-		b->data = malloc(len + RIST_MAX_PAYLOAD_OFFSET);
-		if (!b->data) {
-			free(b);
-			fprintf(stderr, "OOM\n");
-			return NULL;
-		}
+	b->data = malloc(len + RIST_MAX_PAYLOAD_OFFSET);
+	if (!b->data) {
+		free(b);
+		fprintf(stderr, "OOM\n");
+		return NULL;
 	}
 	b->alloc_size = len;
 	if (buf != NULL && len > 0)

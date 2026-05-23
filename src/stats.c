@@ -48,6 +48,15 @@ void rist_sender_flow_statistics(struct rist_sender *ctx)
 		cJSON_AddNumberToObject(udp_queue_obj, "packets_per_second", 1000 * ctx->sender_queue_size / ctx->sender_queue_timelength);
 	else
 		cJSON_AddNumberToObject(udp_queue_obj, "packets_per_second", 0);
+
+	if (ctx->split_mode != LIBRIST_SPLIT_MODE_OFF) {
+		cJSON *split_obj = cJSON_AddObjectToObject(rist_sender_stats, "split");
+		const char *mode_str = ctx->split_mode == LIBRIST_SPLIT_MODE_AUTO ? "auto" : "half";
+		cJSON_AddStringToObject(split_obj, "mode", mode_str);
+		cJSON_AddNumberToObject(split_obj, "pairs_emitted", (double)ctx->stats_pairs_emitted);
+		cJSON_AddNumberToObject(split_obj, "fallback_not_ts", (double)ctx->stats_split_fallback_not_ts);
+	}
+
 	char *stats_json = cJSON_PrintUnformatted(stats);
 	cJSON_Delete(stats);
 
@@ -306,6 +315,15 @@ void rist_receiver_flow_statistics(struct rist_receiver *ctx, struct rist_flow *
 	cJSON_AddNumberToObject(json_stats, "bitrate_rejected", (double)flow->bw_rejected.bitrate);
 	cJSON_AddNumberToObject(json_stats, "bitrate_ts_nulls", (double)flow->bw_tsnull.bitrate);
 	cJSON_AddNumberToObject(json_stats, "bitrate_payload", (double)flow->bw.bitrate + (double)flow->bw_tsnull.bitrate);
+
+	if (ctx->merge_mode != LIBRIST_MERGE_MODE_OFF) {
+		cJSON *merge_obj = cJSON_AddObjectToObject(flow_obj, "merge");
+		const char *mode_str = ctx->merge_mode == LIBRIST_MERGE_MODE_AUTO ? "auto" : "pairs";
+		cJSON_AddStringToObject(merge_obj, "mode", mode_str);
+		cJSON_AddNumberToObject(merge_obj, "pairs_merged", (double)ctx->stats_pairs_merged);
+		cJSON_AddNumberToObject(merge_obj, "orphan_first_delivered", (double)ctx->stats_orphan_first_delivered);
+		cJSON_AddNumberToObject(merge_obj, "orphan_last_delivered", (double)ctx->stats_orphan_last_delivered);
+	}
 
 	char *stats_string = cJSON_PrintUnformatted(stats);
 	cJSON_Delete(stats);

@@ -257,6 +257,9 @@ struct rist_flow {
 	/* variable used for seq number length (16bit or 32bit) */
 	bool short_seq;
 
+	/* Scope-B merge auto-detection: set by keepalive L bit */
+	bool merge_auto_enabled;
+
 	/* Session timeouts variables */
 	uint64_t session_timeout;
 	uint64_t flow_timeout;

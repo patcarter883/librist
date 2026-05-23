@@ -291,6 +291,11 @@ int main(int argc, char *argv[])
 		exitcode = 1;
 		goto cleanup;
 	}
+	if (mtu < 1400 && sender_peer_cfg->split_mode == LIBRIST_SPLIT_MODE_OFF) {
+		rist_log(&logging_settings, RIST_LOG_INFO,
+		         "MTU %d < 1400: auto-enabling split=half on sender\n", mtu);
+		sender_peer_cfg->split_mode = LIBRIST_SPLIT_MODE_HALF;
+	}
 	struct rist_peer *sender_peer = NULL;
 	if (rist_peer_create(sender_ctx, &sender_peer, sender_peer_cfg) != 0) {
 		fprintf(stderr, "Failed to create sender peer\n");
@@ -326,6 +331,11 @@ int main(int argc, char *argv[])
 		fprintf(stderr, "Failed to parse receiver URL: %s\n", input_url);
 		exitcode = 1;
 		goto cleanup;
+	}
+	if (mtu < 1400 && recv_peer_cfg->merge_mode == LIBRIST_MERGE_MODE_OFF) {
+		rist_log(&logging_settings, RIST_LOG_INFO,
+		         "MTU %d < 1400: auto-enabling merge=auto on receiver\n", mtu);
+		recv_peer_cfg->merge_mode = LIBRIST_MERGE_MODE_AUTO;
 	}
 	struct rist_peer *recv_peer = NULL;
 	if (rist_peer_create(receiver_ctx, &recv_peer, recv_peer_cfg) != 0) {

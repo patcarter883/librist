@@ -8,6 +8,7 @@
 #include "librist/librist.h"
 #include "rist-private.h"
 #include <stdatomic.h>
+#include <inttypes.h>
 #include "mpegts.h"
 #include "endian-shim.h"
 
@@ -17,6 +18,8 @@
 
 atomic_ulong failed;
 atomic_ulong stop;
+int use_seq = 0;
+#define USE_SEQ_START 1000
 
 struct rist_logging_settings *logging_settings_sender = NULL;
 struct rist_logging_settings *logging_settings_receiver = NULL;
@@ -143,10 +146,15 @@ static PTHREAD_START_FUNC(send_data, arg) {
             else {
                 hdr->flags1 = htobe16(0x1111);
             }
-            sprintf(&buffer[offset+sizeof(*hdr)+1], "DEADBEAF TEST PACKET #%i-%i", send_counter, ts);
+            int pkt_id = use_seq ? (send_counter + USE_SEQ_START) : send_counter;
+            sprintf(&buffer[offset+sizeof(*hdr)+1], "DEADBEAF TEST PACKET #%i-%i", pkt_id, ts);
         }
         data.payload = &buffer;
         data.payload_len = 188 * random_num;
+        if (use_seq) {
+            data.flags = RIST_DATA_FLAGS_USE_SEQ;
+            data.seq = (uint64_t)(send_counter + USE_SEQ_START);
+        }
         int ret = rist_sender_data_write(rist_sender, &data);
         if (ret < 0) {
             fprintf(stderr, "Failed to send test packet with error code %d!\n", ret);
@@ -179,7 +187,7 @@ static PTHREAD_START_FUNC(send_data, arg) {
 }
 
 int main(int argc, char *argv[]) {
-    if (argc != 5 && argc != 6) {
+    if (argc < 5 || argc > 7) {
         return 99;
     }
     int profile = atoi(argv[1]);
@@ -189,8 +197,10 @@ int main(int argc, char *argv[]) {
     int npd = 0;
     int ret = 0;
 
-    if (argc == 6)
+    if (argc >= 6)
         npd = atoi(argv[5]);
+    if (argc >= 7)
+        use_seq = atoi(argv[6]);
 
     struct rist_ctx *receiver_ctx = NULL;
     struct rist_ctx *sender_ctx = NULL;
@@ -249,6 +259,13 @@ int main(int argc, char *argv[]) {
             if (!got_first) {
                 receive_count = (int)b->seq;
 				got_first = true;
+				if (use_seq && (int)b->seq < USE_SEQ_START) {
+					fprintf(stderr, "USE_SEQ: first seq %"PRIu64" < expected start %d, "
+					        "sender-supplied seq was not preserved\n",
+					        b->seq, USE_SEQ_START);
+					atomic_store(&failed, 1);
+					atomic_store(&stop, 1);
+				}
 			}
             // Check entire mpegts structure
             int tsindex = (int)(b->payload_len / 188);

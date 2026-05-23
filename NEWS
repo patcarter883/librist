@@ -41,6 +41,11 @@ Bug Fixes:
     refused to start the SRP/AES code paths in those environments
     rather than silently downgrade. Fixes #210.
 
+  Tools:
+  - ristsender now preserves incoming RTP sequence numbers and
+    timestamps when the --rtp-sequence and --rtp-timestamp options
+    are used. Previously these options had no effect.
+
 Hardening / follow-ups to 0.2.15:
 
   - EAP-SRP authentication retry exhaustion did not drop the failed

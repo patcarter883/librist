@@ -64,6 +64,9 @@ test('Main profile receive client mode, sender server mode packet loss 25%', tes
 test('Main profile encryption receive server mode, sender client mode', test_send_receive, args: ['1', 'rist://@127.0.0.1:6001?secret=12345678&aes-type=128', 'rist://127.0.0.1:6001?secret=12345678&aes-type=128', '0'],suite: ['main', 'unicast', 'server', 'encryption'])
 test('Main profile encryption receive client mode, sender server mode ', test_send_receive, args: ['1', 'rist://127.0.0.1:6002?secret=12345678&aes-type=128', 'rist://@127.0.0.1:6002?secret=12345678&aes-type=128', '0'],suite: ['main', 'unicast', 'client', 'encryption'])
 test('Main profile encryption receive client mode, sender server mode AES256 ', test_send_receive, args: ['1', 'rist://127.0.0.1:6007?secret=12345678&aes-type=256', 'rist://@127.0.0.1:6007?secret=12345678&aes-type=256', '0'],suite: ['main', 'unicast', 'client', 'encryption'])
+#Caller-controlled seq (RIST_DATA_FLAGS_USE_SEQ) passthrough
+test('Main profile USE_SEQ passthrough', test_send_receive, args: ['1', 'rist://@127.0.0.1:6020?rtt-max=10&rtt-min=1', 'rist://127.0.0.1:6020?rtt-max=10&rtt-min=1', '0', '0', '1'], suite: ['main', 'unicast', 'use_seq'])
+test('Main profile USE_SEQ passthrough 10% loss', test_send_receive, args: ['1', 'rist://@127.0.0.1:6021?rtt-max=10&rtt-min=1', 'rist://127.0.0.1:6021?rtt-max=10&rtt-min=1', '10', '0', '1'], suite: ['main', 'unicast', 'use_seq'])
 #Encryption tests where 1 side has enabled encryption these should fail
 test('Main profile encryption receive server mode unencrypted, sender client mode', test_send_receive, args: ['1', 'rist://@127.0.0.1:6003', 'rist://127.0.0.1:6003?secret=12345678&aes-type=128', '0'], should_fail: true)
 test('Main profile encryption receive server mode, sender client mode unencrypted', test_send_receive, args: ['1', 'rist://@127.0.0.1:6004?secret=12345678&aes-type=128', 'rist://127.0.0.1:6004', '0'], should_fail: true)

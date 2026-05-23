@@ -3077,6 +3077,22 @@ protocol_bypass:
 			}
 			memcpy(&p->data, &info.ka, sizeof(peer->data));
 		}
+		if (p->receiver_ctx &&
+		    p->receiver_ctx->merge_mode == LIBRIST_MERGE_MODE_AUTO) {
+			struct rist_flow *fl = cctx->FLOWS;
+			while (fl) {
+				if (fl->merge_auto_enabled != (bool)info.l) {
+					fl->merge_auto_enabled = (bool)info.l;
+					rist_log_priv(cctx, RIST_LOG_INFO,
+						"merge=auto: peer %s pair-split; "
+						"merge %s for flow %u\n",
+						info.l ? "advertises" : "stopped advertising",
+						info.l ? "enabled" : "disabled",
+						fl->flow_id);
+				}
+				fl = fl->next;
+			}
+		}
 		p->last_pkt_received = now;
 		return;
 	}

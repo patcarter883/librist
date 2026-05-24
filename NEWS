@@ -40,6 +40,10 @@ Bug Fixes:
     Windows version. Without this fix, the 0.2.15 CSPRNG hardening
     refused to start the SRP/AES code paths in those environments
     rather than silently downgrade. Fixes #210.
+  - MSVC builds no longer crash due to stack corruption in atomic
+    operations. The stdatomic compatibility shim hardcoded all
+    operations to a single width, so a 64-bit compare-exchange on a
+    32-bit atomic variable overwrote adjacent stack memory.
 
 Hardening / follow-ups to 0.2.15:
 

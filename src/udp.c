@@ -28,6 +28,44 @@
 #include <assert.h>
 #include <fcntl.h>
 
+/* EMSGSIZE-aware send-failure logger, rate-limited to one line per peer
+ * every 5 seconds to avoid drowning the log when the application is
+ * pushing a stream of oversized packets. The hint on the PMTU case is
+ * deliberately explicit and actionable: an operator who sees this once
+ * should be able to fix it by lowering the application packet size
+ * (e.g. risttunnel -m), without having to chase ICMP filtering. */
+void _librist_log_send_error(struct rist_peer *p, int sock_errno,
+                             size_t attempted, const char *origin)
+{
+	struct rist_common_ctx *ctx = get_cctx(p);
+	uint64_t now = timestampNTP_u64();
+	bool is_pmtu;
+#ifdef _WIN32
+	is_pmtu = (sock_errno == WSAEMSGSIZE);
+#else
+	is_pmtu = (sock_errno == EMSGSIZE);
+#endif
+	if (is_pmtu) {
+		const uint64_t five_seconds = (uint64_t)5 * 65536 * 1000;
+		if (p->last_pmtu_error_log != 0 &&
+		    now - p->last_pmtu_error_log < five_seconds)
+			return;
+		p->last_pmtu_error_log = now;
+		rist_log_priv(ctx, RIST_LOG_ERROR,
+			"PMTU exceeded sending %zu-byte datagram via %s (errno=%d). The path "
+			"MTU to this peer is smaller than our RIST packet size and the "
+			"don't-fragment bit is set, so the kernel refused to fragment. "
+			"Lower the application packet size (e.g. risttunnel -m, or upstream "
+			"MPEG-TS UDP size) so that payload + ~40 bytes of headers fits in the "
+			"path MTU. Further PMTU errors on this peer will be silenced for 5s.\n",
+			attempted, origin, sock_errno);
+	} else {
+		rist_log_priv(ctx, RIST_LOG_ERROR,
+			"Send failed via %s: errno=%d, size=%zu, socket=%d\n",
+			origin, sock_errno, attempted, p->sd);
+	}
+}
+
 size_t rist_send_seq_rtcp(struct rist_peer *p, uint16_t seq_rtp, uint8_t payload_type, uint8_t *payload, size_t payload_len, uint64_t source_time, uint16_t src_port, uint16_t dst_port, bool retry, uint16_t ts_null_bytes)
 {
 	struct rist_common_ctx *ctx = get_cctx(p);
@@ -120,14 +158,19 @@ size_t rist_send_seq_rtcp(struct rist_peer *p, uint16_t seq_rtp, uint8_t payload
 		} while (errorcode == EAGAIN && retries < RIST_MAX_SEND_RETRIES);
 		if (RIST_UNLIKELY(retries > (RIST_MAX_SEND_RETRIES / 5)))
 			rist_log_priv(ctx, RIST_LOG_WARN, "UDP Pacing Send Succeded after retries=%d, ret=%d, socket=%d\n", retries, ret, p->sd);
+		if (RIST_UNLIKELY(ret < 0))
+			_librist_log_send_error(p, errorcode, len, "simple-profile sendto");
 	}
 	else
 		ret = _librist_proto_gre_send_data(p, payload_type, proto_type, data, len, src_port, dst_port, p->rist_gre_version);
 
 out:
-	if (RIST_UNLIKELY(ret <= 0)) {
+	if (RIST_UNLIKELY(ret <= 0 && ctx->profile == RIST_PROFILE_SIMPLE && errorcode == 0)) {
+		/* Generic safety net for ret == 0 or ret < 0 without errorcode
+		 * captured (out-of-band failure paths). PMTU-aware send errors
+		 * have already been logged above. */
 		rist_log_priv(ctx, RIST_LOG_ERROR, "\tSend failed: errno=%d, ret=%d, socket=%d\n", errno, ret, p->sd);
-	} else {
+	} else if (ret > 0) {
 		p->stats_sender_instant.sent++;
 		if (ts_null_bytes)
 			p->stats_sender_instant.ts_null++;

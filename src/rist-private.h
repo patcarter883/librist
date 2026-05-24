@@ -639,6 +639,11 @@ struct rist_peer {
 	uint8_t mac_addr[6];
 	bool send_first_connection_event;
 
+	/* Rate-limit for EMSGSIZE/PMTU-too-large send errors so a flow of
+	 * oversized packets doesn't drown the log. Holds the last log time
+	 * in NTP ticks. */
+	uint64_t last_pmtu_error_log;
+
 	uint64_t log_repeat_timer;
 
 	uint8_t data[SIZEOF_GRE_KEEPALIVE];

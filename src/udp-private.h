@@ -42,5 +42,11 @@ RIST_PRIV int rist_set_url(struct rist_peer *peer);
 RIST_PRIV void rist_create_socket(struct rist_peer *peer);
 RIST_PRIV size_t rist_get_sender_retry_queue_size(struct rist_sender *ctx);
 
+/* Rate-limited log on send failure. Emits a PMTU-specific hint when errno
+ * is EMSGSIZE/WSAEMSGSIZE, otherwise the generic failure line. attempted
+ * is the size we tried to send; sock_errno is errno (or WSAGetLastError on
+ * Windows) captured immediately after the failing send call. */
+RIST_PRIV void _librist_log_send_error(struct rist_peer *p, int sock_errno,
+                                       size_t attempted, const char *origin);
 
 #endif

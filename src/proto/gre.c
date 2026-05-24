@@ -198,8 +198,8 @@ ssize_t _librist_proto_gre_send_data(struct rist_peer *p, uint8_t payload_type, 
 	}
 
 	if (RIST_UNLIKELY(errorcode)) {
-		struct rist_common_ctx *ctx = get_cctx(p);
-        rist_log_priv(ctx, RIST_LOG_ERROR, "Send failed: errno=%d, reason=%s, ret=%d, socket=%d, retries=%d\n", errorcode, strerror(errorcode), ret, p->sd, retries);
+		_librist_log_send_error(p, errorcode, (size_t)(hdr_len + payload_len),
+		                        "main-profile sendmsg");
 	} else if (RIST_UNLIKELY(retries > RIST_MAX_SEND_RETRIES / 5)) {
         struct rist_common_ctx *ctx = get_cctx(p);
         rist_log_priv(ctx, RIST_LOG_WARN, "Send Succeded after retries=%d, ret=%d, socket=%d\n", retries, ret, p->sd);

@@ -113,6 +113,68 @@ int udpsocket_resolve_host(const char *host, uint16_t port, struct sockaddr *add
 	return 0;
 }
 
+/* Set IP-level "don't fragment" so the kernel surfaces EMSGSIZE when our
+ * UDP datagrams exceed the path MTU, instead of silently IP-fragmenting
+ * them and watching the fragments black-hole at an intermediate router.
+ * This matches the behaviour of every other modern UDP transport.
+ *
+ * Best-effort: any platform that does not understand the option keeps the
+ * default (fragmenting) behaviour. We log the failure so it is visible. */
+static void udpsocket_set_dontfragment(int sd, uint16_t af)
+{
+#if defined(__linux__) && defined(IP_MTU_DISCOVER) && defined(IP_PMTUDISC_DO)
+	if (af == AF_INET) {
+		int val = IP_PMTUDISC_DO;
+		if (setsockopt(sd, IPPROTO_IP, IP_MTU_DISCOVER, &val, sizeof(val)) < 0)
+			rist_log_priv3(RIST_LOG_WARN,
+				"setsockopt(IP_MTU_DISCOVER=DO) failed: %s; oversized "
+				"datagrams may be silently IP-fragmented\n", strerror(errno));
+	}
+#if defined(IPV6_MTU_DISCOVER) && defined(IPV6_PMTUDISC_DO)
+	else if (af == AF_INET6) {
+		int val = IPV6_PMTUDISC_DO;
+		if (setsockopt(sd, IPPROTO_IPV6, IPV6_MTU_DISCOVER, &val, sizeof(val)) < 0)
+			rist_log_priv3(RIST_LOG_WARN,
+				"setsockopt(IPV6_MTU_DISCOVER=DO) failed: %s\n", strerror(errno));
+	}
+#endif
+#elif defined(_WIN32) && defined(IP_DONTFRAGMENT)
+	DWORD val = 1;
+	if (af == AF_INET) {
+		if (setsockopt(sd, IPPROTO_IP, IP_DONTFRAGMENT,
+		               (const char *)&val, sizeof(val)) == SOCKET_ERROR)
+			rist_log_priv3(RIST_LOG_WARN,
+				"setsockopt(IP_DONTFRAGMENT) failed: WSAGetLastError=%d\n",
+				WSAGetLastError());
+	}
+#if defined(IPV6_DONTFRAG)
+	else if (af == AF_INET6) {
+		if (setsockopt(sd, IPPROTO_IPV6, IPV6_DONTFRAG,
+		               (const char *)&val, sizeof(val)) == SOCKET_ERROR)
+			rist_log_priv3(RIST_LOG_WARN,
+				"setsockopt(IPV6_DONTFRAG) failed: WSAGetLastError=%d\n",
+				WSAGetLastError());
+	}
+#endif
+#elif defined(IP_DONTFRAG)
+	int val = 1;
+	if (af == AF_INET) {
+		if (setsockopt(sd, IPPROTO_IP, IP_DONTFRAG, &val, sizeof(val)) < 0)
+			rist_log_priv3(RIST_LOG_WARN,
+				"setsockopt(IP_DONTFRAG) failed: %s\n", strerror(errno));
+	}
+#if defined(IPV6_DONTFRAG)
+	else if (af == AF_INET6) {
+		if (setsockopt(sd, IPPROTO_IPV6, IPV6_DONTFRAG, &val, sizeof(val)) < 0)
+			rist_log_priv3(RIST_LOG_WARN,
+				"setsockopt(IPV6_DONTFRAG) failed: %s\n", strerror(errno));
+	}
+#endif
+#else
+	(void)sd; (void)af;
+#endif
+}
+
 int udpsocket_open(uint16_t af)
 {
 	_librist_udpsocket_init_winsock();
@@ -143,6 +205,7 @@ int udpsocket_open(uint16_t af)
 			WSAGetLastError());
 	}
 #endif
+	udpsocket_set_dontfragment(sd, af);
 	return sd;
 }
 

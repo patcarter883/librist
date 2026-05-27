@@ -9,6 +9,7 @@
 #include "rist-private.h"
 #include "endian-shim.h"
 #include "udp-private.h"
+#include "transport-private.h"
 #include "eap.h"
 #include "peer.h"
 
@@ -137,9 +138,7 @@ ssize_t _librist_proto_gre_send_data(struct rist_peer *p, uint8_t payload_type, 
 	ssize_t ret;
 	int errorcode = 0;
 
-	//TODO: abstract this away
 #ifndef _WIN32
-	//TODO: this is POSIX only: add windows equivalent
 	struct msghdr msghdr;
 	struct iovec iov[2];
 	iov[0].iov_base = hdr_buf;
@@ -153,10 +152,9 @@ ssize_t _librist_proto_gre_send_data(struct rist_peer *p, uint8_t payload_type, 
 	msghdr.msg_control = NULL;
 	msghdr.msg_controllen = 0;
 	msghdr.msg_flags = 0;
-	// retry when kernel buffer is full instead of dropping packet (EAGAIN)
 	int retries = 0;
 	do {
-		ret = sendmsg(p->sd, &msghdr, MSG_DONTWAIT);
+		ret = rist_transport_sendmsg(p, &msghdr, MSG_DONTWAIT);
 		if (RIST_UNLIKELY(ret < 0)) {
 			errorcode = errno;
 			retries++;

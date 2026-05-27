@@ -11,6 +11,7 @@
 #include "proto/adv.h"
 #include "rist-private.h"
 #include "udp-private.h"
+#include "transport-private.h"
 #include "log-private.h"
 #include "proto/rist_time.h"
 #include <string.h>
@@ -101,8 +102,7 @@ int rist_adv_send_nack_bitmask(struct rist_peer *peer,
 	if (total < 0)
 		return -1;
 
-	ssize_t ret = sendto(peer->sd, (const char *)pkt, (size_t)total, 0,
-	                     &peer->u.address, peer->address_len);
+	ssize_t ret = rist_transport_sendto(peer, pkt, (size_t)total, 0);
 	if (ret < 0)
 		_librist_log_send_error(peer, errno, (size_t)total, "adv-nack-bitmask sendto");
 
@@ -156,8 +156,7 @@ int rist_adv_send_nack_range(struct rist_peer *peer,
 	if (total < 0)
 		return -1;
 
-	ssize_t ret = sendto(peer->sd, (const char *)pkt, (size_t)total, 0,
-	                     &peer->u.address, peer->address_len);
+	ssize_t ret = rist_transport_sendto(peer, pkt, (size_t)total, 0);
 	if (ret < 0)
 		_librist_log_send_error(peer, errno, (size_t)total, "adv-nack-range sendto");
 
@@ -218,8 +217,7 @@ int rist_adv_send_rtt_echo_request(struct rist_peer *peer)
 	if (total < 0)
 		return -1;
 
-	ssize_t ret = sendto(peer->sd, (const char *)pkt, (size_t)total, 0,
-	                     &peer->u.address, peer->address_len);
+	ssize_t ret = rist_transport_sendto(peer, pkt, (size_t)total, 0);
 	if (ret < 0)
 		_librist_log_send_error(peer, errno, (size_t)total, "adv-rtt-echo-req sendto");
 
@@ -277,8 +275,7 @@ int rist_adv_send_rtt_echo_response(struct rist_peer *peer,
 	if (total < 0)
 		return -1;
 
-	ssize_t ret = sendto(peer->sd, (const char *)pkt, (size_t)total, 0,
-	                     &peer->u.address, peer->address_len);
+	ssize_t ret = rist_transport_sendto(peer, pkt, (size_t)total, 0);
 	if (ret < 0)
 		_librist_log_send_error(peer, errno, (size_t)total, "adv-rtt-echo-resp sendto");
 
@@ -342,8 +339,7 @@ int rist_adv_send_keepalive(struct rist_peer *peer)
 	if (total < 0)
 		return -1;
 
-	ssize_t ret = sendto(peer->sd, (const char *)pkt, (size_t)total, 0,
-	                     &peer->u.address, peer->address_len);
+	ssize_t ret = rist_transport_sendto(peer, pkt, (size_t)total, 0);
 	if (ret < 0)
 		_librist_log_send_error(peer, errno, (size_t)total, "adv-keepalive sendto");
 
@@ -405,8 +401,7 @@ int rist_adv_send_unsupported(struct rist_peer *peer,
 	if (total < 0)
 		return -1;
 
-	ssize_t ret = sendto(peer->sd, (const char *)pkt, (size_t)total, 0,
-	                     &peer->u.address, peer->address_len);
+	ssize_t ret = rist_transport_sendto(peer, pkt, (size_t)total, 0);
 	if (ret < 0)
 		_librist_log_send_error(peer, errno, (size_t)total, "adv-unsupported sendto");
 

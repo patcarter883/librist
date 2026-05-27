@@ -34,6 +34,7 @@ if should_install
 					'sender.h',
 					'stats.h',
 					'tun.h',
+					'transport.h',
 					'tunnel.h',
 					'udpsocket.h',
 					'urlparam.h',

@@ -64,6 +64,8 @@ struct evsocket_ctx {
 	struct evsocket_event *_array;
 	int giveup;
 	struct evsocket_ctx *next;
+	evsocket_poll_func poll_override;
+	void *poll_opaque;
 };
 #if !defined(_WIN32) || HAVE_PTHREADS
 static pthread_mutex_t ctx_list_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -306,7 +308,10 @@ int evsocket_loop_single(struct evsocket_ctx *ctx, int timeout, int max_events)
 		goto loop_error;
 	}
 
-	pollret = poll(ctx->pfd, ctx->n_events, timeout);
+	if (ctx->poll_override)
+		pollret = ctx->poll_override(ctx->poll_opaque, ctx->pfd, ctx->n_events, timeout);
+	else
+		pollret = poll(ctx->pfd, ctx->n_events, timeout);
 	if (pollret <= 0) {
 		if (pollret < 0) {
 			rist_log_priv3( RIST_LOG_ERROR, "libevsocket, evsocket_loop: poll returned %d, n_events = %d, error = %d\n",
@@ -357,6 +362,16 @@ void evsocket_loop_stop(struct evsocket_ctx *ctx)
 {
 	if (ctx)
 		ctx->giveup = 1;
+}
+
+void evsocket_set_poll_override(struct evsocket_ctx *ctx,
+                                evsocket_poll_func func,
+                                void *opaque)
+{
+	if (ctx) {
+		ctx->poll_override = func;
+		ctx->poll_opaque = opaque;
+	}
 }
 
 int evsocket_geteventcount(struct evsocket_ctx *ctx)

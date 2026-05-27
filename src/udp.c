@@ -21,6 +21,7 @@
 #endif
 #include "crypto/psk.h"
 #include "mpegts.h"
+#include "transport-private.h"
 #include <stdlib.h>
 #include <stddef.h>
 #include <errno.h>
@@ -119,8 +120,7 @@ size_t rist_send_seq_rtcp(struct rist_peer *p, uint32_t seq_rtp, uint8_t payload
 		int retries_count = 0;
 		int errorcode = 0;
 		do {
-			ret = sendto(p->sd, (const char *)adv_buf, (size_t)total, 0,
-			             &(p->u.address), p->address_len);
+			ret = rist_transport_sendto(p, adv_buf, (size_t)total, 0);
 			if (RIST_UNLIKELY(ret < 0)) {
 				errorcode = errno;
 				retries_count++;
@@ -213,7 +213,7 @@ adv_out:
 	if (ctx->profile == RIST_PROFILE_SIMPLE) {
 		// retry when kernel buffer is full instead of dropping packet (EAGAIN)
 		do {
-			ret = sendto(p->sd,(const char*)data, len, 0, &(p->u.address), p->address_len);
+			ret = rist_transport_sendto(p, data, len, 0);
 			if (RIST_UNLIKELY(ret < 0))
 			{
 				errorcode = errno;

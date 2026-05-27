@@ -4,6 +4,15 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <memory.h>
+
+#ifdef __EMSCRIPTEN__
+/* WASM has no network interfaces — fill with zeros */
+int _librist_network_get_macaddr(uint8_t mac[]) {
+  memset(mac, 0, 6);
+  return 0;
+}
+#else /* !__EMSCRIPTEN__ */
+
 #ifndef _WIN32
 #include <ifaddrs.h>
 #ifdef __linux__
@@ -105,3 +114,4 @@ int _librist_network_get_macaddr(uint8_t mac[]) {
 #endif
   return 0;
 }
+#endif /* !__EMSCRIPTEN__ */

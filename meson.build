@@ -161,16 +161,23 @@ void test(void) {
 	elif host_machine.system() == 'gnu'
 		test_args += '-D_GNU_SOURCE'
 		add_project_arguments('-D_GNU_SOURCE', language: 'c')
+	elif host_machine.system() == 'emscripten'
+		# No TUN, no platform_files needed
+		add_project_arguments('-D_GNU_SOURCE', language: 'c')
 	endif
 	librist_soversion = librist_soversion
-	have_clock_gettime = cc.has_function('clock_gettime', prefix : '#include <time.h>', args : test_args)
-	if not have_clock_gettime and host_machine.system() != 'darwin'
-		lib_rt = cc.find_library('rt', required: false)
-		have_clock_gettime = cc.has_function('clock_gettime', prefix : '#include <time.h>', args : test_args, dependencies : lib_rt)
-		if not have_clock_gettime
-			error('clock_gettime not found')
+	if host_machine.system() == 'emscripten'
+		have_clock_gettime = true
+	else
+		have_clock_gettime = cc.has_function('clock_gettime', prefix : '#include <time.h>', args : test_args)
+		if not have_clock_gettime and host_machine.system() != 'darwin'
+			lib_rt = cc.find_library('rt', required: false)
+			have_clock_gettime = cc.has_function('clock_gettime', prefix : '#include <time.h>', args : test_args, dependencies : lib_rt)
+			if not have_clock_gettime
+				error('clock_gettime not found')
+			endif
+			deps += [ lib_rt ]
 		endif
-		deps += [ lib_rt ]
 	endif
 	add_project_arguments(['-Wshadow', '-pedantic-errors'], language: 'c')
 	add_project_arguments(cc.get_supported_arguments([
@@ -184,8 +191,10 @@ void test(void) {
 		'-Wmaybe-uninitialized',
 		'-Wno-error=deprecated-declarations'
 		]), language : 'c')
-	threads = [ dependency('threads') ]
-	if host_machine.system() != 'freebsd'
+	if host_machine.system() != 'emscripten'
+		threads = [ dependency('threads') ]
+	endif
+	if host_machine.system() != 'freebsd' and host_machine.system() != 'emscripten'
 	  add_project_arguments(cc.get_supported_arguments([
             '-Watomic-implicit-seq-cst']), language: 'c')
 	endif
@@ -339,6 +348,7 @@ librist = library('librist',
 	'src/mpegts.c',
 	'src/peer.c',
 	'src/udp.c',
+	'src/transport.c',
 	'src/stats.c',
 	'src/udpsocket.c',
 	'src/libevsocket.c',

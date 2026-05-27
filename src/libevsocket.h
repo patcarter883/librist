@@ -10,8 +10,21 @@
 
 #include "common/attributes.h"
 
+#ifdef _WIN32
+#include <winsock2.h>
+#else
+#include <poll.h>
+#endif
+
 struct evsocket_event;
 struct evsocket_ctx;
+
+typedef int (*evsocket_poll_func)(void *opaque, struct pollfd *fds,
+                                  int nfds, int timeout_ms);
+
+RIST_PRIV void evsocket_set_poll_override(struct evsocket_ctx *ctx,
+                                          evsocket_poll_func func,
+                                          void *opaque);
 
 #endif
 

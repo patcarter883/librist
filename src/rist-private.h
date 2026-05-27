@@ -25,6 +25,7 @@
 #include "socket-shim.h"
 #include "libevsocket.h"
 #include "librist.h"
+#include "librist/transport.h"
 #include "udpsocket.h"
 #include "crypto/psk.h"
 #include <errno.h>
@@ -364,6 +365,10 @@ struct rist_common_ctx {
 
 	bool debug;
 	uint32_t birthtime_rtp_offset;
+
+	/* Pluggable transport (default: POSIX sockets) */
+	struct rist_transport_ops transport;
+	bool transport_active;
 
 	/* Connection status callback */
 	connection_status_callback_t connection_status_callback;

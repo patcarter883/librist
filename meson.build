@@ -162,7 +162,7 @@ void test(void) {
 		test_args += '-D_GNU_SOURCE'
 		add_project_arguments('-D_GNU_SOURCE', language: 'c')
 	elif host_machine.system() == 'emscripten'
-		# No TUN, no platform_files needed
+		platform_files += 'src/tun_emscripten.c'
 		add_project_arguments('-D_GNU_SOURCE', language: 'c')
 	endif
 	librist_soversion = librist_soversion

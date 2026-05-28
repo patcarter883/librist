@@ -11,6 +11,7 @@
 
 #define RIST_OOB_API_IP_PROTOCOL 252
 #define RIST_OOB_API_IP_IDENT_AUTH 54321
+#define RIST_OOB_API_IP_IDENT_TELEMETRY 54322
 #define RIST_OOB_ERROR_INVALID_LENGTH -1
 #define RIST_OOB_ERROR_INVALID_PROTO -2
 #define RIST_OOB_ERROR_INVALID_IDENT -3
@@ -39,4 +40,5 @@ RIST_PACKED_STRUCT(udpheader, {
 
 void populate_ipv4_rist_header(unsigned short int address_family, unsigned char *recv_buf, ssize_t recv_bufsize, struct sockaddr * addr, socklen_t addrlen);
 int oob_build_api_payload(uint16_t *buffer, char *sourceip, char *destip, char *message, int message_len);
+int oob_build_api_payload_ident(uint16_t *buffer, char *sourceip, char *destip, const void *payload, int payload_len, uint16_t ident);
 char *oob_process_api_message(int buffer_len, char *buffer, int *message_len);

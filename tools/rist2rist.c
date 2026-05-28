@@ -30,8 +30,37 @@
 #endif
 #include "oob_shared.h"
 #include "string-shim.h"
+#ifdef _WIN32
+#include <ws2tcpip.h>
+#else
+#include <arpa/inet.h>
+#endif
 
 #define RIST2RIST_VERSION "31"
+
+#define RTT_HYSTERESIS_MS 15
+#define MAX_SENDER_PEERS  8
+
+struct __attribute__((__packed__)) wan_telemetry_t {
+	uint8_t  link_quality;     // 0..100
+	uint32_t worst_case_rtt;   // ms, network byte order
+};
+
+struct sender_peer_stat {
+	uint32_t peer_id;
+	int      in_use;
+	double   quality;
+	uint32_t rtt;
+	size_t   bandwidth;
+};
+
+/* All telemetry globals are touched only from the librist worker thread
+ * (cb_auth_connect, cb_auth_disconnect, cb_stats), so no locking needed. */
+static struct sender_peer_stat g_sender_peers[MAX_SENDER_PEERS];
+static uint8_t  g_last_link_quality = 0xFFu;       /* sentinel: forces first emit */
+static uint32_t g_last_rtt          = 0xFFFFFFFFu; /* sentinel: forces first emit */
+static struct rist_ctx  *g_lan_receiver_ctx  = NULL;
+static struct rist_peer *g_lan_receiver_peer = NULL;
 
 struct rist_sender_args {
 	char* cname;
@@ -152,14 +181,18 @@ static int cb_auth_connect(void *arg, const char* connecting_ip, uint16_t connec
 	oob_block.payload = buffer;
 	oob_block.payload_len = ret;
 	rist_oob_write(receiver_ctx, &oob_block);
+	/* Track the LAN-side peer so we can write WAN telemetry back over its OOB channel. */
+	if (arg == g_lan_receiver_ctx) {
+		g_lan_receiver_peer = peer;
+	}
 	return 0;
 }
 
 static int cb_auth_disconnect(void *arg, struct rist_peer *peer)
 {
-	(void)peer;
-	struct rist_ctx *ctx = (struct rist_ctx *)arg;
-	(void)ctx;
+	if (arg == g_lan_receiver_ctx && peer == g_lan_receiver_peer) {
+		g_lan_receiver_peer = NULL;
+	}
 	return 0;
 }
 
@@ -175,6 +208,92 @@ static int cb_recv_oob(void *arg, const struct rist_oob_block *oob_block)
 	return 0;
 }
 
+static void wan_telemetry_update(const struct rist_stats_sender_peer *sp)
+{
+	if (!g_lan_receiver_ctx || !g_lan_receiver_peer) {
+		return;
+	}
+
+	/* Find or insert this peer in the per-peer cache. */
+	int slot = -1;
+	int first_free = -1;
+	for (int i = 0; i < MAX_SENDER_PEERS; i++) {
+		if (g_sender_peers[i].in_use && g_sender_peers[i].peer_id == sp->peer_id) {
+			slot = i;
+			break;
+		}
+		if (!g_sender_peers[i].in_use && first_free < 0) {
+			first_free = i;
+		}
+	}
+	if (slot < 0) {
+		if (first_free < 0) {
+			return; /* table full — drop silently */
+		}
+		slot = first_free;
+		g_sender_peers[slot].in_use = 1;
+		g_sender_peers[slot].peer_id = sp->peer_id;
+	}
+	g_sender_peers[slot].quality   = sp->quality;
+	g_sender_peers[slot].rtt       = sp->rtt;
+	g_sender_peers[slot].bandwidth = sp->bandwidth;
+
+	/* Aggregate across all known sender peers. */
+	double   weighted_q_sum = 0.0;
+	double   q_sum          = 0.0;
+	size_t   total_bw       = 0;
+	uint32_t max_rtt        = 0;
+	int      n_peers        = 0;
+	for (int i = 0; i < MAX_SENDER_PEERS; i++) {
+		if (!g_sender_peers[i].in_use) continue;
+		n_peers++;
+		weighted_q_sum += g_sender_peers[i].quality * (double)g_sender_peers[i].bandwidth;
+		q_sum          += g_sender_peers[i].quality;
+		total_bw       += g_sender_peers[i].bandwidth;
+		if (g_sender_peers[i].rtt > max_rtt) {
+			max_rtt = g_sender_peers[i].rtt;
+		}
+	}
+	if (n_peers == 0) return;
+
+	double q_agg = (total_bw > 0) ? (weighted_q_sum / (double)total_bw)
+	                              : (q_sum / (double)n_peers);
+	if (q_agg < 0.0)   q_agg = 0.0;
+	if (q_agg > 100.0) q_agg = 100.0;
+	uint8_t  link_quality = (uint8_t)(q_agg + 0.5);
+	uint32_t rtt          = max_rtt;
+
+	int quality_changed = (link_quality != g_last_link_quality);
+	int rtt_changed     = (abs((int)rtt - (int)g_last_rtt) > RTT_HYSTERESIS_MS);
+	if (!quality_changed && !rtt_changed) {
+		return;
+	}
+
+	struct wan_telemetry_t telemetry;
+	telemetry.link_quality   = link_quality;
+	telemetry.worst_case_rtt = htonl(rtt);
+
+	/* IP envelope src/dest are cosmetic — the receiver dispatches on iph_ident. */
+	uint16_t buffer[64];
+	int payload_len = oob_build_api_payload_ident(buffer, "0.0.0.0", "0.0.0.0",
+	                                              &telemetry, (int)sizeof(telemetry),
+	                                              RIST_OOB_API_IP_IDENT_TELEMETRY);
+
+	struct rist_oob_block oob_block = {
+		.peer        = g_lan_receiver_peer,
+		.payload     = buffer,
+		.payload_len = (size_t)payload_len,
+		.ts_ntp      = 0,
+	};
+	rist_oob_write(g_lan_receiver_ctx, &oob_block);
+
+	g_last_link_quality = link_quality;
+	g_last_rtt          = rtt;
+
+	rist_log(&logging_settings, RIST_LOG_DEBUG,
+		"telemetry: q=%u rtt=%u ms peers=%d\n", link_quality, rtt, n_peers);
+}
+
 static int cb_stats(void *arg, const struct rist_stats *stats_container) {
 	rist_log(&logging_settings, RIST_LOG_INFO, "%s\n\n", stats_container->stats_json);
 #if HAVE_PROMETHEUS_SUPPORT
@@ -184,6 +303,9 @@ static int cb_stats(void *arg, const struct rist_stats *stats_container) {
 #else
 	(void)arg;
 #endif
+	if (stats_container->stats_type == RIST_STATS_SENDER_PEER) {
+		wan_telemetry_update(&stats_container->stats.sender_peer);
+	}
 	rist_stats_free(stats_container);
 	return 0;
 }
@@ -512,6 +634,10 @@ usage:
 		exitcode = 1;
 		goto out;
 	}
+
+	/* Publish receiver ctx for the WAN-telemetry path before auth can fire. */
+	g_lan_receiver_ctx = receiver_ctx;
+	memset(g_sender_peers, 0, sizeof(g_sender_peers));
 
 	if (rist_auth_handler_set(receiver_ctx, cb_auth_connect, cb_auth_disconnect, receiver_ctx) == -1) {
 		rist_log(&logging_settings, RIST_LOG_ERROR, "Could not init rist auth handler\n");

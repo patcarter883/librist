@@ -63,9 +63,9 @@ int oob_build_api_payload(uint16_t *buffer, char *sourceip, char *destip, char *
 {
 	// We populate a valid IP header here but we do not really use it for any type of routing
 	// We also populate a message that has the same information already present in the IP header but write it in text format
-	// This is only for demonstration purposes as we do not use the IP or the text message for anything on 
-	// the receiving end or inside the library. However, this is a good method to create internal communication 
-	// messages between peers. When designing your solution, just remember that in the OOB channel, there is no 
+	// This is only for demonstration purposes as we do not use the IP or the text message for anything on
+	// the receiving end or inside the library. However, this is a good method to create internal communication
+	// messages between peers. When designing your solution, just remember that in the OOB channel, there is no
 	// extra buffer delay and no packet recovery.
 	struct ipheader *ip = (struct ipheader *) buffer;
 	// unassigned protocol 252 used for API communication, api_id (54321 to identify this API message type)
@@ -74,6 +74,22 @@ int oob_build_api_payload(uint16_t *buffer, char *sourceip, char *destip, char *
 	int total_len = sizeof(struct ipheader) + message_len;
 	ip->iph_len = htons(total_len);
 	// Calculate the checksum for integrity since there is no packet recovery
+	ip->iph_chksum = csum(buffer, (total_len + 1) / 2);
+	return total_len;
+}
+
+int oob_build_api_payload_ident(uint16_t *buffer, char *sourceip, char *destip, const void *payload, int payload_len, uint16_t ident)
+{
+	struct ipheader *ip = (struct ipheader *) buffer;
+	populate_ip_header(ip, sourceip, destip, ident, RIST_OOB_API_IP_PROTOCOL);
+	// Payload follows the IP header at byte offset sizeof(struct ipheader);
+	// the existing oob_build_api_payload above uses (uint16_t *) arithmetic
+	// which doubles the offset — preserved there for backward compatibility,
+	// fixed here so a matching oob_process_api_message reader (which advances
+	// by header_size in bytes) sees the payload where it expects it.
+	memcpy((uint8_t *)buffer + sizeof(struct ipheader), payload, payload_len);
+	int total_len = sizeof(struct ipheader) + payload_len;
+	ip->iph_len = htons(total_len);
 	ip->iph_chksum = csum(buffer, (total_len + 1) / 2);
 	return total_len;
 }

@@ -1038,9 +1038,9 @@ static void receiver_output(struct rist_receiver *ctx, struct rist_flow *f)
 							uint8_t *combined = malloc(RIST_MAX_PAYLOAD_OFFSET + combined_len);
 							if (combined) {
 								memcpy(combined + RIST_MAX_PAYLOAD_OFFSET,
-								       b->data + RIST_MAX_PAYLOAD_OFFSET, b->size);
+								       (uint8_t *)b->data + RIST_MAX_PAYLOAD_OFFSET, b->size);
 								memcpy(combined + RIST_MAX_PAYLOAD_OFFSET + b->size,
-								       b2->data + RIST_MAX_PAYLOAD_OFFSET, b2->size);
+								       (uint8_t *)b2->data + RIST_MAX_PAYLOAD_OFFSET, b2->size);
 								block = calloc(1, sizeof(*block));
 								if (block) {
 									block->ref = rist_ref_create(block);

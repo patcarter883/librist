@@ -135,6 +135,26 @@ struct rist_peer_config
 
 	uint32_t split_mode;      /* enum librist_split_mode (sender) */
 	uint32_t merge_mode;      /* enum librist_merge_mode (receiver) */
+
+	/* Reflector mode: when enabled on a receiver listener, incoming data
+	 * packets are transparently forwarded to all other connected peers
+	 * (one-to-many fan-out).  Disabled by default; enable via URL parameter
+	 * ?reflector=1.  Main Profile only.
+	 *
+	 * Trade-offs vs rist2rist (per-subscriber ARQ relay):
+	 * - No per-subscriber retry buffer: the reflector does not cache
+	 *   data; retransmissions rely entirely on the publisher's buffer.
+	 * - Retransmissions fan out to ALL subscribers, not just the one
+	 *   that NACKed — bandwidth cost scales with subscriber count.
+	 * - Recovery RTT ~ RTT(sub<->reflector) + RTT(reflector<->pub),
+	 *   roughly 2x a direct connection.
+	 * - No per-subscriber congestion control or stats: all NACKs
+	 *   appear to the publisher as coming from a single peer.
+	 *
+	 * Best suited for low subscriber counts with clean last-mile links.
+	 * For high fan-out, lossy last-mile, or per-subscriber buffer
+	 * tuning, use rist2rist instead. */
+	int reflector;
 };
 
 /**

@@ -1,4 +1,4 @@
-/* librist. Copyright © RIST Communiity
+/* librist. Copyright © RIST Community
  * SPDX-License-Identifier: BSD-2-Clause
  *
  * Test for transparent reflector functionality and RIST protocol verification.
@@ -109,7 +109,7 @@ int main(int argc, char *argv[]) {
     fprintf(stdout, "============================================\n\n");
 
     /* 1. Setup transparent reflector receiver, publisher sender, and subscriber receiver */
-    const char *reflector_url  = "rist://@127.0.0.1:45678?secret=12345678&aes-type=128&rtt-max=200&rtt-min=1&buffer-min=50&buffer-max=1500";
+    const char *reflector_url  = "rist://@127.0.0.1:45678?secret=12345678&aes-type=128&rtt-max=200&rtt-min=1&buffer-min=50&buffer-max=1500&reflector=1";
     const char *publisher_url  = "rist://127.0.0.1:45678?secret=12345678&aes-type=128&rtt-max=200&rtt-min=1&buffer-min=50&buffer-max=1500";
     const char *subscriber_url = "rist://127.0.0.1:45678?secret=12345678&aes-type=128&rtt-max=200&rtt-min=1&buffer-min=50&buffer-max=1500";
 

@@ -276,6 +276,10 @@ int parse_url_options(const char* url, struct rist_peer_config *output_peer_conf
 					ret = -1;
 					fprintf(stderr, "Unknown merge mode '%s'; expected off|auto|pairs\n", val);
 				}
+			} else if (strcmp( url_params[i].key, RIST_URL_PARAM_REFLECTOR ) == 0) {
+				int temp = atoi( val );
+				if (temp >= 0 && temp <= 1)
+					output_peer_config->reflector = temp;
 			} else {
 				ret = -1;
 				fprintf(stderr, "Unknown or invalid parameter %s\n", url_params[i].key);
@@ -2474,6 +2478,7 @@ static void peer_copy_settings(struct rist_peer *peer_src, struct rist_peer *pee
 	peer->config.min_retries = peer_src->config.min_retries;
 	peer->config.max_retries = peer_src->config.max_retries;
 	peer->config.timing_mode = peer_src->config.timing_mode;
+	peer->config.reflector = peer_src->config.reflector;
 	peer->rtcp_keepalive_interval = peer_src->rtcp_keepalive_interval;
 	peer->peer_ssrc = peer_src->peer_ssrc;
 	peer->session_timeout = peer_src->session_timeout;
@@ -2579,8 +2584,10 @@ static void rist_peer_recv(struct evsocket_ctx *evctx, int fd, short revents, vo
 
 	recv_bufsize = ret;
 
-	/* Transparent One-to-Many Reflector logic (run raw before decryption) */
-	if (peer->listening && !peer->multicast_receiver) {
+	/* Transparent one-to-many reflector: forward raw packets between
+	 * publisher and subscriber children before any decryption or
+	 * protocol processing.  Only active when ?reflector=1 is set. */
+	if (peer->config.reflector && peer->listening && !peer->multicast_receiver) {
 		struct rist_peer *p_sender = _librist_peer_match_peer_addr(peer, family, addr);
 		if (p_sender && p_sender->parent == peer) {
 			struct rist_peer *child = peer->child;
@@ -3107,7 +3114,7 @@ protocol_bypass:
 				uint16_t sender_max_buffer = 0;
 				if (p->sender_ctx != NULL) {
 					sender_max_buffer = p->sender_ctx->sender_recover_min_time;
-				} else if (peer->listening && !peer->multicast_receiver) {
+				} else if (peer->config.reflector && peer->listening && !peer->multicast_receiver) {
 					struct rist_peer *child = peer->child;
 					while (child) {
 						if (child->is_reflector_publisher && child->sender_max_buffer_ticks > 0) {
@@ -3140,7 +3147,7 @@ protocol_bypass:
 			uint16_t sender_max_buffer = 0;
 			if (p->sender_ctx != NULL) {
 				sender_max_buffer = p->sender_ctx->sender_recover_min_time;
-			} else if (peer->listening && !peer->multicast_receiver) {
+			} else if (peer->config.reflector && peer->listening && !peer->multicast_receiver) {
 				struct rist_peer *child = peer->child;
 				while (child) {
 					if (child->is_reflector_publisher && child->sender_max_buffer_ticks > 0) {
@@ -3226,7 +3233,7 @@ protocol_bypass:
 				p->sender_max_buffer_ticks = 0;
 			} else {
 				p->sender_max_buffer_ticks = sender_max_buffer * RIST_CLOCK;
-				if (peer->listening && !peer->multicast_receiver) {
+				if (peer->config.reflector && peer->listening && !peer->multicast_receiver) {
 					struct rist_peer *child = peer->child;
 					while (child) {
 						if (child != p && !child->is_reflector_publisher && child->rist_gre_version >= 2) {
@@ -4348,6 +4355,7 @@ static void store_peer_settings(const struct rist_peer_config *settings, struct 
 	peer->config.weight = settings->weight;
 	peer->config.timing_mode = settings->timing_mode;
 	peer->config.virt_dst_port = settings->virt_dst_port;
+	peer->config.reflector = settings->reflector;
 
 	init_peer_settings(peer);
 }

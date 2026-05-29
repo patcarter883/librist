@@ -50,5 +50,6 @@
 #define RIST_URL_PARAM_MERGE_MODE "merge"
 #define RIST_URL_PARAM_VERBOSE_LEVEL "verbose-level"
 #define RIST_URL_PARAM_RTT_MULTIPLIER "rtt-multiplier"
+#define RIST_URL_PARAM_REFLECTOR "reflector"
 
 #endif /* LIBRIST_URL_PARAM_H */

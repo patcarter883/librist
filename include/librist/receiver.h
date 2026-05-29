@@ -153,6 +153,38 @@ RIST_API void rist_receiver_data_block_free2(struct rist_data_block **block);
  */
 RIST_API int rist_receiver_data_notify_fd_set(struct rist_ctx *ctx, int fd);
 
+/**
+ * @brief Flow Attribute callback function (Advanced Profile, TR-06-3 Section 5.3.7)
+ *
+ * Called when a Flow Attribute message (CI=0x8001) is received from a sender.
+ * The JSON string contains session/flow metadata as defined by TR-06-3 Section 5.4.
+ * The json pointer is valid only for the duration of the callback.
+ *
+ * @param arg optional user data set via rist_receiver_flow_attr_callback_set
+ * @param peer the peer that sent the flow attribute
+ * @param json NUL-terminated JSON string containing flow attributes
+ * @param json_len length of the JSON string (excluding NUL terminator)
+ * @return int, ignored.
+ */
+typedef int (*receiver_flow_attr_callback_t)(void *arg, struct rist_peer *peer,
+                                             const char *json, size_t json_len);
+
+/**
+ * @brief Enable flow attribute callback channel
+ *
+ * Call to enable reception of Advanced Profile Flow Attribute messages.
+ * When set, the callback is invoked each time a CI=0x8001 control message
+ * arrives from a sender.
+ *
+ * @param ctx RIST receiver context
+ * @param cb The function that will be called when a flow attribute is received
+ * @param arg the extra argument passed to the callback
+ * @return 0 on success, -1 on error
+ */
+RIST_API int rist_receiver_flow_attr_callback_set(struct rist_ctx *ctx,
+                                                   receiver_flow_attr_callback_t cb,
+                                                   void *arg);
+
 #ifdef __cplusplus
 }
 #endif

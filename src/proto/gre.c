@@ -9,6 +9,7 @@
 #include "rist-private.h"
 #include "endian-shim.h"
 #include "udp-private.h"
+#include "transport-private.h"
 #include "eap.h"
 #include "peer.h"
 
@@ -137,9 +138,25 @@ ssize_t _librist_proto_gre_send_data(struct rist_peer *p, uint8_t payload_type, 
 	ssize_t ret;
 	int errorcode = 0;
 
-	//TODO: abstract this away
+	/* Type 8 wrapping: when both sides have negotiated Advanced Profile,
+	 * wrap outbound GRE packets in an AP Type 8 envelope so the remote
+	 * can accept them on a unified AP port. */
+	if (get_cctx(p)->profile == RIST_PROFILE_ADVANCED &&
+	    p->is_advanced && p->remote_supports_advanced) {
+		uint8_t gre_flat[RIST_MAX_PACKET_SIZE];
+		size_t gre_total = hdr_len + payload_len;
+		if (gre_total <= sizeof(gre_flat)) {
+			memcpy(gre_flat, hdr_buf, hdr_len);
+			memcpy(gre_flat + hdr_len, payload_wr, payload_len);
+			ret = (rist_adv_send_type8(p, gre_flat, gre_total) == 0)
+			      ? (ssize_t)gre_total : -1;
+			if (modifying_payload)
+				free(payload_wr);
+			return ret;
+		}
+	}
+
 #ifndef _WIN32
-	//TODO: this is POSIX only: add windows equivalent
 	struct msghdr msghdr;
 	struct iovec iov[2];
 	iov[0].iov_base = hdr_buf;
@@ -153,10 +170,9 @@ ssize_t _librist_proto_gre_send_data(struct rist_peer *p, uint8_t payload_type, 
 	msghdr.msg_control = NULL;
 	msghdr.msg_controllen = 0;
 	msghdr.msg_flags = 0;
-	// retry when kernel buffer is full instead of dropping packet (EAGAIN)
 	int retries = 0;
 	do {
-		ret = sendmsg(p->sd, &msghdr, MSG_DONTWAIT);
+		ret = rist_transport_sendmsg(p, &msghdr, MSG_DONTWAIT);
 		if (RIST_UNLIKELY(ret < 0)) {
 			errorcode = errno;
 			retries++;
@@ -209,14 +225,27 @@ ssize_t _librist_proto_gre_send_data(struct rist_peer *p, uint8_t payload_type, 
 }
 
 void _librist_proto_gre_send_keepalive(struct rist_peer *p, uint8_t gre_version) {
-	struct rist_gre_keepalive ka = {0};
-	memcpy(ka.mac_array, p->mac_addr, sizeof(ka.mac_array));
-	SET_BIT(ka.capabilities1, 0); // Null packet deletion
-	SET_BIT(ka.capabilities1, 2); // SMPTE-2022-7
-	SET_BIT(ka.capabilities1, 5); // Bonding
-	//SET_BIT(ka.capabilities2, 3);//OTF Passphrase change
-	SET_BIT(ka.capabilities2, 5);//Reduced overhead
-	_librist_proto_gre_send_data(p, 0, RIST_GRE_PROTOCOL_TYPE_KEEPALIVE, (uint8_t *)&ka, sizeof(ka), 0, 0, gre_version);
+	uint8_t ka_buf[12] = {0};
+	struct rist_gre_keepalive *ka = (struct rist_gre_keepalive *)ka_buf;
+	memcpy(ka->mac_array, p->mac_addr, sizeof(ka->mac_array));
+	SET_BIT(ka->capabilities1, 0); // Null packet deletion
+	if (p->sender_ctx && p->sender_ctx->split_mode != LIBRIST_SPLIT_MODE_OFF)
+		SET_BIT(ka->capabilities1, 1); // Pair-split active
+	SET_BIT(ka->capabilities1, 2); // SMPTE-2022-7
+	SET_BIT(ka->capabilities1, 5); // Bonding
+	SET_BIT(ka->capabilities2, 5); // Reduced overhead
+
+	struct rist_common_ctx *cctx = get_cctx(p);
+	size_t ka_len = sizeof(struct rist_gre_keepalive);
+	if (cctx && cctx->profile == RIST_PROFILE_ADVANCED) {
+		/* TR-06-3 Section 5.3.6: I bit (bit 31 of 32-bit capabilities) */
+		ka_buf[8]  = 0x80; /* I bit = bit 7 of capabilities3 (= bit 31 overall) */
+		ka_buf[9]  = 0;
+		ka_buf[10] = 0;
+		ka_buf[11] = 0;
+		ka_len = 12;
+	}
+	_librist_proto_gre_send_data(p, 0, RIST_GRE_PROTOCOL_TYPE_KEEPALIVE, ka_buf, ka_len, 0, 0, gre_version);
 }
 
 int _librist_proto_gre_parse_keepalive(const uint8_t buf[], size_t buflen, struct rist_keepalive_info  *info) {
@@ -240,9 +269,18 @@ int _librist_proto_gre_parse_keepalive(const uint8_t buf[], size_t buflen, struc
 	info->v = CHECK_BIT(ka->capabilities2, 5);
 	info->j = CHECK_BIT(ka->capabilities2, 4);
 	info->f = CHECK_BIT(ka->capabilities2, 3);
-	info->json_len = buflen - sizeof(*ka);
-	if (info->json_len > 0) {
-		info->json = (const char *)&buf[sizeof(*ka)];
+	/* TR-06-3 extended capabilities (4 bytes at offset 8, if present) */
+	if (buflen >= sizeof(*ka) + 4) {
+		info->adv_i = !!(buf[sizeof(*ka)]     & 0x80); /* bit 31 → I */
+		info->adv_g = !!(buf[sizeof(*ka)]     & 0x40); /* bit 30 → G */
+		info->adv_c = !!(buf[sizeof(*ka)]     & 0x20); /* bit 29 → C */
+		info->json_len = buflen - sizeof(*ka) - 4;
+		if (info->json_len > 0)
+			info->json = (const char *)&buf[sizeof(*ka) + 4];
+	} else {
+		info->json_len = buflen - sizeof(*ka);
+		if (info->json_len > 0)
+			info->json = (const char *)&buf[sizeof(*ka)];
 	}
 	return 0;
 }

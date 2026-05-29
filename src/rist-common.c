@@ -12,8 +12,10 @@
 #include <limits.h>
 #include "log-private.h"
 #include "crypto/psk.h"
+#include <lz4.h>
 #include "crypto/random.h"
 #include "udp-private.h"
+#include "transport-private.h"
 #include "udpsocket.h"
 #include "endian-shim.h"
 #include "time-shim.h"
@@ -250,6 +252,30 @@ int parse_url_options(const char* url, struct rist_peer_config *output_peer_conf
 				int temp = atoi( val );
 				if (temp > 0)
 					output_peer_config->max_retries = temp;
+			} else if (output_peer_config->version >= 1 &&
+			           strcmp( url_params[i].key, RIST_URL_PARAM_SPLIT_MODE ) == 0) {
+				if (strcmp(val, "off") == 0)
+					output_peer_config->split_mode = LIBRIST_SPLIT_MODE_OFF;
+				else if (strcmp(val, "auto") == 0 || strcmp(val, "ts") == 0)
+					output_peer_config->split_mode = LIBRIST_SPLIT_MODE_AUTO;
+				else if (strcmp(val, "half") == 0)
+					output_peer_config->split_mode = LIBRIST_SPLIT_MODE_HALF;
+				else {
+					ret = -1;
+					fprintf(stderr, "Unknown split mode '%s'; expected off|auto|half\n", val);
+				}
+			} else if (output_peer_config->version >= 1 &&
+			           strcmp( url_params[i].key, RIST_URL_PARAM_MERGE_MODE ) == 0) {
+				if (strcmp(val, "off") == 0)
+					output_peer_config->merge_mode = LIBRIST_MERGE_MODE_OFF;
+				else if (strcmp(val, "pairs") == 0)
+					output_peer_config->merge_mode = LIBRIST_MERGE_MODE_PAIRS;
+				else if (strcmp(val, "auto") == 0)
+					output_peer_config->merge_mode = LIBRIST_MERGE_MODE_AUTO;
+				else {
+					ret = -1;
+					fprintf(stderr, "Unknown merge mode '%s'; expected off|auto|pairs\n", val);
+				}
 			} else {
 				ret = -1;
 				fprintf(stderr, "Unknown or invalid parameter %s\n", url_params[i].key);
@@ -367,14 +393,11 @@ struct rist_buffer *rist_new_buffer(struct rist_common_ctx *ctx, const void *buf
 		return NULL;
 	}
 
-	if (buf != NULL && len > 0)
-	{
-		b->data = malloc(len + RIST_MAX_PAYLOAD_OFFSET);
-		if (!b->data) {
-			free(b);
-			fprintf(stderr, "OOM\n");
-			return NULL;
-		}
+	b->data = malloc(len + RIST_MAX_PAYLOAD_OFFSET);
+	if (!b->data) {
+		free(b);
+		fprintf(stderr, "OOM\n");
+		return NULL;
 	}
 	b->alloc_size = len;
 	if (buf != NULL && len > 0)
@@ -936,6 +959,7 @@ static void receiver_output(struct rist_receiver *ctx, struct rist_flow *f)
 					holes, counter, atomic_load_explicit(&f->receiver_queue_size, memory_order_acquire));
 		}
 		if (b) {
+			bool merged = false;
 			if (b->type == RIST_PAYLOAD_TYPE_DATA_RAW) {
 
 				now = timestampNTP_u64();
@@ -998,12 +1022,65 @@ static void receiver_output(struct rist_receiver *ctx, struct rist_flow *f)
 						f->flag_flow_buffer_start = false;
 						flags |= RIST_DATA_FLAGS_FLOW_BUFFER_START;
 					}
-					/* insert into fifo queue */
-					uint8_t *payload = b->data;
-					struct rist_data_block *block = new_data_block(
-							NULL, b,
-							&payload[RIST_MAX_PAYLOAD_OFFSET], f->flow_id, flags);
-					b->data = NULL;
+
+					bool merge_active = (ctx->merge_mode == LIBRIST_MERGE_MODE_PAIRS) ||
+					                    (ctx->merge_mode == LIBRIST_MERGE_MODE_AUTO &&
+					                     f->merge_auto_enabled);
+
+					struct rist_data_block *block = NULL;
+
+					if (merge_active && (b->seq & 1) == 0) {
+						size_t partner_idx = (output_idx + 1) & (f->receiver_queue_max - 1);
+						struct rist_buffer *b2 = f->receiver_queue[partner_idx];
+						if (b2 && b2->type == RIST_PAYLOAD_TYPE_DATA_RAW &&
+						    b2->seq == ((b->seq + 1) & UINT16_MAX) &&
+						    b2->source_time == b->source_time) {
+							size_t combined_len = b->size + b2->size;
+							uint8_t *combined = malloc(RIST_MAX_PAYLOAD_OFFSET + combined_len);
+							if (combined) {
+								memcpy(combined + RIST_MAX_PAYLOAD_OFFSET,
+								       (uint8_t *)b->data + RIST_MAX_PAYLOAD_OFFSET, b->size);
+								memcpy(combined + RIST_MAX_PAYLOAD_OFFSET + b->size,
+								       (uint8_t *)b2->data + RIST_MAX_PAYLOAD_OFFSET, b2->size);
+								block = calloc(1, sizeof(*block));
+								if (block) {
+									block->ref = rist_ref_create(block);
+									block->peer = b->peer;
+									block->flow_id = f->flow_id;
+									block->payload = combined + RIST_MAX_PAYLOAD_OFFSET;
+									block->payload_len = combined_len;
+									block->virt_src_port = b->src_port;
+									block->virt_dst_port = b->dst_port;
+									block->ts_ntp = b->source_time;
+									block->seq = b->seq / 2;
+									block->flags = flags;
+									merged = true;
+									ctx->stats_pairs_merged++;
+								} else {
+									free(combined);
+								}
+							}
+							if (merged) {
+								b->data = NULL;
+								f->last_seq_output = b2->seq;
+								atomic_fetch_sub_explicit(&f->receiver_queue_size, b2->size, memory_order_relaxed);
+								f->receiver_queue[partner_idx] = NULL;
+								free_rist_buffer(&ctx->common, b2);
+							}
+						} else {
+							ctx->stats_orphan_first_delivered++;
+						}
+					} else if (merge_active && (b->seq & 1) == 1) {
+						ctx->stats_orphan_last_delivered++;
+					}
+
+					if (!merged) {
+						uint8_t *payload = b->data;
+						block = new_data_block(
+								NULL, b,
+								&payload[RIST_MAX_PAYLOAD_OFFSET], f->flow_id, flags);
+						b->data = NULL;
+					}
 					if (ctx->receiver_data_fd >= 0 && block) {
 						int written;
 						if (ctx->receiver_data_fd_flags & RIST_DATA_FD_FLAG_TUN)
@@ -1064,11 +1141,16 @@ static void receiver_output(struct rist_receiver *ctx, struct rist_flow *f)
 			//	fprintf(stderr, "rtcp skip at %"PRIu32", just removing it from queue\n", b->seq);
 
 next:
-			f->last_seq_output = b->seq;
+			if (!merged)
+				f->last_seq_output = b->seq;
 			atomic_fetch_sub_explicit(&f->receiver_queue_size, b->size, memory_order_relaxed);
 			f->receiver_queue[output_idx] = NULL;
 			free_rist_buffer(&ctx->common, b);
 			output_idx = (output_idx + 1)& (f->receiver_queue_max -1);
+			if (merged) {
+				/* partner already freed and NULLed above; skip its slot */
+				output_idx = (output_idx + 1) & (f->receiver_queue_max - 1);
+			}
 			atomic_store_explicit(&f->receiver_queue_output_idx, output_idx, memory_order_release);
 			if (atomic_load_explicit(&f->receiver_queue_size, memory_order_acquire) == 0) {
 				if (f->last_output_time == 0)
@@ -1149,10 +1231,6 @@ void receiver_nack_output(struct rist_receiver *ctx, struct rist_flow *f)
 	struct rist_missing_buffer **prev = &f->missing;
 	struct rist_missing_buffer *previous = NULL;
 	int empty = 0;
-	uint32_t seq_msb = 0;
-	if (mb)
-		seq_msb = mb->seq >> 16;
-
 	while (mb) {
 		int remove_from_queue_reason = 0;
 		struct rist_peer *peer = mb->peer;
@@ -1228,17 +1306,7 @@ void receiver_nack_output(struct rist_receiver *ctx, struct rist_flow *f)
 			// Packet is still missing, re-stamp the expiration time so we can re-add to queue
 			// We reject the next retry for a number of reasons checked inside the function,
 			// in which case the nack will never be resent and we signal a queue removal
-			if (seq_msb != (mb->seq >> 16))
-			{
-				// We do not mix/group missing sequence numbers with different upper 2 bytes
-				if (ctx->common.debug)
-					rist_log_priv(&ctx->common, RIST_LOG_DEBUG,
-							"seq-msb changed from %"PRIu32" to %"PRIu32" (%"PRIu32", %zu, %"PRIu32")\n",
-							seq_msb, mb->seq >> 16, mb->seq, f->nacks.counter,
-							f->missing_counter);
-				send_nack_group(ctx, f);
-			}
-			else if (f->nacks.counter == (maxcounter - 1)) {
+			if (f->nacks.counter == (maxcounter - 1)) {
 				rist_log_priv(&ctx->common, RIST_LOG_DEBUG,
 						"nack max counter per packet (%d) exceeded. Skipping the rest\n",
 						maxcounter);
@@ -2197,7 +2265,6 @@ static void rist_recv_rtcp(struct rist_peer *peer, uint32_t seq,
 	uint16_t processed_bytes = 0;
 	uint16_t records;
 	uint8_t subtype;
-	uint32_t nack_seq_msb = 0;
 	peer->stats_receiver_instant.received_rtcp++;
 	struct rist_common_ctx *ctx = get_cctx(peer);
 
@@ -2231,15 +2298,7 @@ static void rist_recv_rtcp(struct rist_peer *peer, uint32_t seq,
 
 		switch(ptype) {
 			case PTYPE_NACK_CUSTOM:
-				if (subtype == NACK_FMT_SEQEXT)
-				{
-					if (bytes < sizeof(struct rist_rtcp_seqext))
-						break;
-					struct rist_rtcp_seqext *seq_ext = (struct rist_rtcp_seqext *) pkt;
-					nack_seq_msb = ((uint32_t)be16toh(seq_ext->seq_msb)) << 16;
-					break;
-				}
-				else if (subtype == ECHO_RESPONSE) {
+				if (subtype == ECHO_RESPONSE) {
 					if (bytes < sizeof(struct rist_rtcp_echoext))
 						break;
 					struct rist_rtcp_echoext *echoresponse = (struct rist_rtcp_echoext *) pkt;
@@ -2263,7 +2322,7 @@ static void rist_recv_rtcp(struct rist_peer *peer, uint32_t seq,
 				}
 			case PTYPE_NACK_BITMASK:
 				//Also FMT Range
-				rist_sender_recv_nack(peer, flow_id, payload->src_port, payload->dst_port, pkt, bytes_left, nack_seq_msb);
+				rist_sender_recv_nack(peer, flow_id, payload->src_port, payload->dst_port, pkt, bytes_left, 0);
 				break;
 			case PTYPE_RR:
 				if (ntohs(rtcp->len) == 7) {
@@ -2491,7 +2550,7 @@ static void rist_peer_recv(struct evsocket_ctx *evctx, int fd, short revents, vo
 	uint8_t *recv_buf_npd = cctx->buf.recv_npd;
 	uint16_t port = 0;
 
-	ssize_t ret = recvfrom(peer->sd, (char*)recv_buf, RIST_MAX_PACKET_SIZE, MSG_DONTWAIT, (struct sockaddr *)addr, &addrlen);
+	ssize_t ret = rist_transport_recvfrom(peer, recv_buf, RIST_MAX_PACKET_SIZE, MSG_DONTWAIT, addr, &addrlen);
 	if (ss.ss_family == AF_INET)
 		port = htons(((struct sockaddr_in *)addr)->sin_port);
 	else
@@ -2528,6 +2587,195 @@ static void rist_peer_recv(struct evsocket_ctx *evctx, int fd, short revents, vo
 	uint8_t rist_gre_version = RIST_GRE_VERSION_MIN;
 	if (cctx->profile > RIST_PROFILE_SIMPLE)
 	{
+		/* Section 9 (TR-06-3): Auto-detect GRE vs RTP framing.
+		 * First byte bits [7:6]:
+		 *   0b0x = GRE (bit 7 = 0 → Main/Advanced GRE tunnel)
+		 *   0b10 = RTP V=2 → Advanced Profile if PT=127 */
+		if (cctx->profile == RIST_PROFILE_ADVANCED &&
+		    recv_bufsize >= RIST_ADV_HEADER_MIN &&
+		    (recv_buf[0] & 0xC0) == 0x80) {
+			/* Looks like RTP V=2. Check PT field for Advanced Profile. */
+			uint8_t pt = recv_buf[1] & 0x7F;
+			if (pt == RIST_ADV_PT || pt >= 96) {
+				struct rist_adv_parsed adv_parsed;
+				if (rist_adv_parse(recv_buf, recv_bufsize, &adv_parsed) == 0) {
+					p = _librist_peer_match_peer_addr(peer, family, addr);
+					if (!p) {
+						if (peer->listening || peer->multicast_sender) {
+							p = peer_initialize(NULL, peer->sender_ctx, peer->receiver_ctx);
+							p->handled_first = false;
+							p->adv_peer_id = ++cctx->peer_counter;
+							p->parent = peer;
+							peer_copy_settings(peer, p);
+							if (peer->receiver_ctx) {
+								p->remote_port = port;
+								p->local_port = peer->local_port;
+							} else {
+								p->remote_port = peer->remote_port;
+								p->local_port = peer->local_port;
+							}
+							p->address_family = family;
+							p->address_len = addrlen;
+							p->listening = 0;
+							p->is_rtcp = peer->is_rtcp;
+							p->is_data = peer->is_data;
+							p->peer_data = p;
+							p->is_advanced = true;
+							memcpy(&p->u.address, addr, addrlen);
+							p->sd = peer->sd;
+							p->authenticated = false;
+							p->event_recv = peer->event_recv;
+							p->send_keepalive = true;
+							if (cctx->auth.conn_cb) {
+								char incoming_ip_str[INET6_ADDRSTRLEN];
+								char *ip_str = get_ip_str(&p->u.address, incoming_ip_str, INET6_ADDRSTRLEN);
+								char parent_ip_str[INET6_ADDRSTRLEN];
+								char *parent_str = get_ip_str(&p->parent->u.address, parent_ip_str, INET6_ADDRSTRLEN);
+								if (!parent_str) parent_str = "";
+								uint16_t parent_port = 0;
+								if (p->parent->u.storage.ss_family == AF_INET)
+									parent_port = htons(p->parent->u.inaddr.sin_port);
+								else
+									parent_port = htons(p->parent->u.inaddr6.sin6_port);
+								if (ip_str && cctx->auth.conn_cb(cctx->auth.arg, ip_str, port, parent_str, parent_port, p)) {
+									free(p);
+									return;
+								}
+							}
+							peer_append(p);
+						} else {
+							return;
+						}
+					}
+					p->is_advanced = true;
+					p->last_pkt_received = now;
+
+					/* Dispatch by encapsulation type */
+					if (adv_parsed.enc_type == RIST_ADV_TYPE_CONTROL) {
+						rist_calculate_bitrate(recv_bufsize, &p->bw);
+						rist_adv_recv_control(p, adv_parsed.payload,
+						                      adv_parsed.payload_len);
+						return;
+					}
+
+					uint32_t adv_flow_id = adv_parsed.ssrc & ~(uint32_t)1;
+					retry = adv_parsed.retransmit ? 1 : 0;
+
+					if (adv_parsed.enc_type == RIST_ADV_TYPE_DIRECT) {
+						/* PSK decryption for Advanced Profile */
+						uint8_t adv_dec_buf[RIST_MAX_PACKET_SIZE];
+						const uint8_t *adv_data = adv_parsed.payload;
+						size_t adv_data_len = adv_parsed.payload_len;
+
+						if (adv_parsed.psk_mode == RIST_ADV_PSK_AES_CTR) {
+							if (!p->key_rx.key_size) {
+								if (now > (peer->log_repeat_timer + RIST_LOG_QUIESCE_TIMER)) {
+									rist_log_priv(get_cctx(peer), RIST_LOG_ERROR,
+										"Advanced Profile: encrypted data but no PSK configured\n");
+									peer->log_repeat_timer = now;
+								}
+								return;
+							}
+							if (!adv_parsed.psk_nonce || !adv_parsed.psk_iv) {
+								rist_log_priv(get_cctx(peer), RIST_LOG_ERROR,
+									"Advanced Profile: PSK AES-CTR missing nonce/IV\n");
+								return;
+							}
+							bool odd_nonce_adv = CHECK_BIT(adv_parsed.psk_nonce[0], 7);
+							struct rist_key *ak = &p->key_rx;
+							if (odd_nonce_adv)
+								ak = &p->key_rx_odd;
+							pthread_mutex_lock(&p->peer_lock);
+							uint32_t seq_nbe;
+							memcpy(&seq_nbe, adv_parsed.psk_iv, sizeof(seq_nbe));
+							_librist_crypto_psk_decrypt(ak,
+								(uint8_t *)adv_parsed.psk_nonce, seq_nbe, 1,
+								adv_parsed.payload, adv_dec_buf, adv_data_len);
+							pthread_mutex_unlock(&p->peer_lock);
+							if (ak->bad_decryption)
+								return;
+							adv_data = adv_dec_buf;
+						} else if (adv_parsed.psk_mode != RIST_ADV_PSK_NONE) {
+							if (now > (peer->log_repeat_timer + RIST_LOG_QUIESCE_TIMER)) {
+								rist_log_priv(get_cctx(peer), RIST_LOG_WARN,
+									"Advanced Profile: unsupported PSK mode %u\n",
+									adv_parsed.psk_mode);
+								peer->log_repeat_timer = now;
+							}
+							return;
+						} else if (p->key_rx.key_size) {
+							if (now > (peer->log_repeat_timer + RIST_LOG_QUIESCE_TIMER)) {
+								rist_log_priv(get_cctx(peer), RIST_LOG_ERROR,
+									"Advanced Profile: expect encrypted data but received clear\n");
+								peer->log_repeat_timer = now;
+							}
+							return;
+						}
+
+						uint8_t adv_lz4_buf[RIST_MAX_PACKET_SIZE];
+						if (adv_parsed.lpc_mode == RIST_ADV_LPC_LZ4 && adv_data_len > 0) {
+							int dlen = LZ4_decompress_safe(
+								(const char *)adv_data, (char *)adv_lz4_buf,
+								(int)adv_data_len, RIST_MAX_PACKET_SIZE);
+							if (dlen <= 0) {
+								rist_log_priv(get_cctx(peer), RIST_LOG_ERROR,
+									"Advanced Profile: LZ4 decompress failed\n");
+								return;
+							}
+							adv_data = adv_lz4_buf;
+							adv_data_len = (size_t)dlen;
+						} else if (adv_parsed.lpc_mode != RIST_ADV_LPC_NONE) {
+							if (now > (peer->log_repeat_timer + RIST_LOG_QUIESCE_TIMER)) {
+								rist_log_priv(get_cctx(peer), RIST_LOG_WARN,
+									"Advanced Profile: unsupported LPC mode %u\n",
+									adv_parsed.lpc_mode);
+								peer->log_repeat_timer = now;
+							}
+							return;
+						}
+
+						uint64_t adv_source_time = now;
+
+						if (peer->receiver_ctx) {
+							rist_calculate_bitrate(recv_bufsize, &p->bw);
+							uint16_t adv_src_port = (uint16_t)(32768 + p->adv_peer_id);
+							uint16_t adv_dst_port = p->config.virt_dst_port;
+							if (adv_parsed.has_flow_id && adv_parsed.flow_id) {
+								adv_dst_port = rist_adv_flow_outer(adv_parsed.flow_id);
+								adv_src_port = rist_adv_flow_inner(adv_parsed.flow_id);
+							}
+							struct rist_buffer adv_payload = {
+								.data = (void *)adv_data,
+								.size = adv_data_len,
+								.type = RIST_PAYLOAD_TYPE_DATA_RAW,
+								.src_port = adv_src_port,
+								.dst_port = adv_dst_port,
+							};
+							rist_receiver_recv_data(p, adv_parsed.seq, adv_flow_id,
+								adv_source_time, now, &adv_payload, retry,
+								RIST_PAYLOAD_TYPE_DATA_RAW, recv_bufsize, 0);
+						}
+						return;
+					}
+
+					if (adv_parsed.enc_type == RIST_ADV_TYPE_GRE_MAIN) {
+						/* Type 8: Strip Advanced Profile header, process inner GRE.
+						 * The payload is a Main Profile GRE packet — feed it back
+						 * through the existing GRE receive path by updating the
+						 * buffer pointer and falling through. */
+						recv_buf = (uint8_t *)adv_parsed.payload;
+						recv_bufsize = adv_parsed.payload_len;
+						/* Fall through to GRE processing below */
+					} else {
+						rist_log_priv(get_cctx(peer), RIST_LOG_DEBUG,
+							"Advanced Profile: unsupported encapsulation type %u\n",
+							adv_parsed.enc_type);
+						return;
+					}
+				}
+			}
+		}
+
 		struct rist_gre_hdr *gre = NULL;
 		// Make sure we have enough bytes
 		if (recv_bufsize < (int)sizeof(*gre)) {
@@ -2658,9 +2906,9 @@ static void rist_peer_recv(struct evsocket_ctx *evctx, int fd, short revents, vo
 			} else if (vsf_subtype >= 0x8000){//Control messages
 				if (vsf_subtype == 0x8000) {
 					gre_proto = RIST_GRE_PROTOCOL_TYPE_KEEPALIVE;
-				} else if (vsf_subtype == 0x8001) {
-					//nonce announcements, we don't care
-					return;
+			} else if (vsf_subtype == 0x8001) {
+				/* Flow Attribute (Main Profile VSF extension) — not parsed here */
+				return;
 				} else if (vsf_subtype == RIST_VSF_PROTOCOL_SUBTYPE_BUFFER_NEGOTIATION) {
 					gre_proto = RIST_VSF_PROTOCOL_SUBTYPE_BUFFER_NEGOTIATION;
 				} else {
@@ -2869,8 +3117,30 @@ protocol_bypass:
 				rist_log_priv(get_cctx(peer), RIST_LOG_INFO, "Keepalive JSON:\n%.*s\n", json_log_len, info.json);
 			}
 			//TODO: add callback?
-			//TODO: handle capabilities in some way
+			/* TR-06-3 Section 9: detect Advanced Profile support via I bit */
+			if (info.adv_i && !p->remote_supports_advanced) {
+				p->remote_supports_advanced = true;
+				rist_log_priv(get_cctx(peer), RIST_LOG_INFO,
+					"Peer %u advertises Advanced Profile capability (I=1)\n",
+					p->adv_peer_id);
+			}
 			memcpy(&p->data, &info.ka, sizeof(peer->data));
+		}
+		if (p->receiver_ctx &&
+		    p->receiver_ctx->merge_mode == LIBRIST_MERGE_MODE_AUTO) {
+			struct rist_flow *fl = cctx->FLOWS;
+			while (fl) {
+				if (fl->merge_auto_enabled != (bool)info.l) {
+					fl->merge_auto_enabled = (bool)info.l;
+					rist_log_priv(cctx, RIST_LOG_INFO,
+						"merge=auto: peer %s pair-split; "
+						"merge %s for flow %u\n",
+						info.l ? "advertises" : "stopped advertising",
+						info.l ? "enabled" : "disabled",
+						fl->flow_id);
+				}
+				fl = fl->next;
+			}
 		}
 		p->last_pkt_received = now;
 		return;
@@ -3287,8 +3557,10 @@ static void sender_send_data(struct rist_sender *ctx, int maxcount)
 			}
 			else {
 				rist_sender_send_data_balanced(ctx, buffer);
-				// For non-advanced mode seq to index mapping
-				ctx->seq_index[buffer->seq_rtp] = (uint32_t)idx;
+				if (ctx->common.profile == RIST_PROFILE_ADVANCED)
+					ctx->seq_index[buffer->seq & (ctx->sender_queue_max - 1)] = (uint32_t)idx;
+				else
+					ctx->seq_index[buffer->seq_rtp] = (uint32_t)idx;
 			}
 		}
 
@@ -3469,15 +3741,27 @@ static PTHREAD_START_FUNC(receiver_pthread_dataout, arg)
 }
 
 static void rist_peer_periodic(struct rist_peer *p, uint64_t now) {
+	bool adv_negotiated = (get_cctx(p)->profile == RIST_PROFILE_ADVANCED &&
+	                       p->is_advanced && p->remote_supports_advanced);
 	if (p->send_keepalive) {
 		if (now > p->next_periodic_rtcp) {
 			p->next_periodic_rtcp = now + p->rtcp_keepalive_interval;
-			if (p->remote_port != 0)
+			if (p->remote_port != 0) {
 				rist_peer_rtcp(NULL, p);
+				if (adv_negotiated)
+					rist_adv_send_rtt_echo_request(p);
+			}
 		}
-		if (get_cctx(p)->profile == RIST_PROFILE_MAIN && p->next_keepalive_packet <= now) {
+		if (get_cctx(p)->profile >= RIST_PROFILE_MAIN && p->next_keepalive_packet <= now) {
 			p->next_keepalive_packet = now + ONE_SECOND;
-			_librist_proto_gre_send_keepalive(p, p->rist_gre_version);
+			if (adv_negotiated) {
+				rist_adv_send_keepalive(p);
+				if (p->sender_ctx && p->next_flow_attr <= now) {
+					p->next_flow_attr = now + ONE_SECOND;
+					rist_adv_send_flow_attr(p);
+				}
+			} else
+				_librist_proto_gre_send_keepalive(p, p->rist_gre_version);
 #if HAVE_SRP_SUPPORT
 			if (!p->child && !eap_is_authenticated(p->eap_ctx) && p->eap_authentication_state == 2 && p->parent && p->parent->multicast_sender)  {
 				p->eap_authentication_state = 1;
@@ -3667,6 +3951,16 @@ int init_common_ctx(struct rist_common_ctx *ctx, enum rist_profile profile)
 
 	ctx->profile = profile;
 	ctx->stats_report_time = 0;
+
+	if (profile == RIST_PROFILE_ADVANCED) {
+		/* Generate a random even SSRC base for the Protected flow.
+		 * The Unprotected flow uses ssrc_base | 1 (Section 5.2.1). */
+		uint32_t rnd = 0;
+		_librist_crypto_ramdom_get_bytes((uint8_t *)&rnd, sizeof(rnd));
+		ctx->adv_ssrc_base = rnd & ~(uint32_t)1;
+		ctx->adv_seq_protected = 0;
+		ctx->adv_seq_unprotected = 0;
+	}
 
 	if (pthread_mutex_init(&ctx->peerlist_lock, NULL) != 0) {
 		rist_log_priv3( RIST_LOG_ERROR, "Failed to init ctx->peerlist_lock\n");

@@ -25,12 +25,14 @@
 #include "socket-shim.h"
 #include "libevsocket.h"
 #include "librist.h"
+#include "librist/transport.h"
 #include "udpsocket.h"
 #include "crypto/psk.h"
 #include <errno.h>
 #include <stdatomic.h>
 #include "librist/logging.h"
 #include "proto/gre.h"
+#include "proto/adv.h"
 
 struct cJSON;
 
@@ -255,6 +257,9 @@ struct rist_flow {
 	/* variable used for seq number length (16bit or 32bit) */
 	bool short_seq;
 
+	/* Scope-B merge auto-detection: set by keepalive L bit */
+	bool merge_auto_enabled;
+
 	/* Session timeouts variables */
 	uint64_t session_timeout;
 	uint64_t flow_timeout;
@@ -330,6 +335,11 @@ struct rist_common_ctx {
 	uint32_t seq;
 	uint16_t seq_rtp;
 
+	/* Advanced Profile (TR-06-3) state */
+	uint32_t adv_ssrc_base;       /* Even SSRC for Protected flow */
+	uint32_t adv_seq_protected;   /* 32-bit seq counter for even SSRC */
+	uint32_t adv_seq_unprotected; /* 32-bit seq counter for odd SSRC */
+
 	/* Peer counter (only the ones created by the API) */
 	uint32_t peer_counter;
 
@@ -359,6 +369,10 @@ struct rist_common_ctx {
 	bool debug;
 	uint32_t birthtime_rtp_offset;
 
+	/* Pluggable transport (default: POSIX sockets) */
+	struct rist_transport_ops transport;
+	bool transport_active;
+
 	/* Connection status callback */
 	connection_status_callback_t connection_status_callback;
 	void *connection_status_callback_argument;
@@ -387,6 +401,10 @@ struct rist_receiver {
 	receiver_session_timeout_callback_t receiver_session_timeout_callback;
 	void *receiver_session_timeout_callback_argument;
 
+	/* Receiver flow attribute callback (Advanced Profile CI=0x8001) */
+	receiver_flow_attr_callback_t receiver_flow_attr_callback;
+	void *receiver_flow_attr_callback_argument;
+
 	/* Receiver thread variables */
 	bool protocol_running;
 	pthread_t receiver_thread;
@@ -402,6 +420,11 @@ struct rist_receiver {
 	bool simulate_loss;
 	uint16_t loss_percentage;
 	uint32_t fifo_queue_size;
+
+	uint32_t merge_mode;
+	uint64_t stats_pairs_merged;
+	uint64_t stats_orphan_first_delivered;
+	uint64_t stats_orphan_last_delivered;
 };
 
 struct rist_sender {
@@ -412,6 +435,10 @@ struct rist_sender {
 	uint32_t recovery_maxbitrate_max;
 	uint32_t max_nacksperloop;
 	bool null_packet_suppression;
+
+	uint32_t split_mode;
+	uint64_t stats_pairs_emitted;
+	uint64_t stats_split_fallback_not_ts;
 
 	/* Sender thread variables */
 	bool protocol_running;
@@ -447,8 +474,9 @@ struct rist_sender {
 	uint64_t cooldown_time;
 	int cooldown_mode;
 
-	/* Recovery */
-	uint32_t seq_index[UINT16_SIZE];
+	/* Recovery — sized to RIST_SERVER_QUEUE_BUFFERS so Advanced Profile
+	 * can index with the full 32-bit seq space (seq & (queue_max - 1)). */
+	uint32_t seq_index[RIST_SERVER_QUEUE_BUFFERS];
 	size_t sender_recover_min_time;
 	size_t sender_queue_buffer_size;
 
@@ -566,6 +594,10 @@ struct rist_peer {
 	int eap_authentication_state;
 	uint8_t rist_gre_version;
 
+	/* Advanced Profile (TR-06-3) peer state */
+	bool is_advanced;              /* Peer operating in Advanced Profile mode */
+	bool remote_supports_advanced; /* Remote advertised I=1 in keep-alive */
+
 	/* compression flag (sender only) */
 	bool compression;
 
@@ -628,6 +660,7 @@ struct rist_peer {
 	uint32_t rtcp_keepalive_interval;
 	uint64_t next_periodic_rtcp;
 	uint64_t next_keepalive_packet;
+	uint64_t next_flow_attr;
 	uint64_t session_timeout;
 	uint64_t last_pkt_received;
 	uint64_t last_sender_report_time;

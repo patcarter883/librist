@@ -18,7 +18,9 @@
 
 atomic_ulong failed;
 atomic_ulong stop;
+atomic_ulong flow_attr_received;
 int use_seq = 0;
+int check_flow_attr = 0;
 #define USE_SEQ_START 1000
 
 struct rist_logging_settings *logging_settings_sender = NULL;
@@ -40,6 +42,14 @@ int log_callback(void *arg, int level, const char *msg) {
         atomic_store(&failed, 1);
         atomic_store(&stop, 1);
     }
+    return 0;
+}
+
+static int flow_attr_callback(void *arg, struct rist_peer *peer, const char *json, size_t json_len) {
+    (void)arg;
+    (void)peer;
+    if (json && json_len > 0)
+        atomic_fetch_add(&flow_attr_received, 1);
     return 0;
 }
 
@@ -73,7 +83,10 @@ struct rist_ctx *setup_rist_receiver(int profile, const char *url) {
     }
 #endif
     free((void *)peer_config);
-	if (rist_start(ctx) == -1) {
+    if (check_flow_attr) {
+        rist_receiver_flow_attr_callback_set(ctx, flow_attr_callback, NULL);
+    }
+    if (rist_start(ctx) == -1) {
 		rist_log(logging_settings_receiver, RIST_LOG_ERROR, "Could not start rist sender\n");
 		return NULL;
 	}
@@ -187,7 +200,7 @@ static PTHREAD_START_FUNC(send_data, arg) {
 }
 
 int main(int argc, char *argv[]) {
-    if (argc < 5 || argc > 7) {
+    if (argc < 5 || argc > 8) {
         return 99;
     }
     int profile = atoi(argv[1]);
@@ -201,12 +214,15 @@ int main(int argc, char *argv[]) {
         npd = atoi(argv[5]);
     if (argc >= 7)
         use_seq = atoi(argv[6]);
+    if (argc >= 8)
+        check_flow_attr = atoi(argv[7]);
 
     struct rist_ctx *receiver_ctx = NULL;
     struct rist_ctx *sender_ctx = NULL;
 
     atomic_init(&failed, 0);
     atomic_init(&stop, 0);
+    atomic_init(&flow_attr_received, 0);
 
 
     fprintf(stdout, "Testing profile %i with receiver url %s and sender url %s and losspercentage: %i\n", profile, url1, url2, losspercent);
@@ -303,6 +319,14 @@ int main(int argc, char *argv[]) {
     }
 	if (!got_first || receive_count < 12500)
 		atomic_store(&failed, 1);
+	if (check_flow_attr) {
+		unsigned long fa_count = atomic_load(&flow_attr_received);
+		fprintf(stdout, "Flow attributes received: %lu\n", fa_count);
+		if (fa_count == 0) {
+			fprintf(stderr, "FAIL: expected at least one flow attribute callback\n");
+			atomic_store(&failed, 1);
+		}
+	}
 	if (atomic_load(&failed))
 		ret = 1;
 	pthread_join(send_loop, NULL);

@@ -44,8 +44,7 @@ int rist_receiver_create(struct rist_ctx **_ctx, enum rist_profile profile,
 	}
 	if (profile == RIST_PROFILE_ADVANCED)
 	{
-		rist_log_priv2(logging_settings, RIST_LOG_WARN, "Advanced profile not implemented yet, using main profile instead\n");
-		profile = RIST_PROFILE_MAIN;
+		rist_log_priv2(logging_settings, RIST_LOG_INFO, "Using Advanced profile (VSF TR-06-3)\n");
 	}
 	struct rist_receiver *ctx = calloc(1, sizeof(*ctx));
 	if (!ctx)
@@ -337,6 +336,27 @@ int rist_receiver_session_timeout_callback_set(struct rist_ctx *rist_ctx,
   return 0;
 }
 
+int rist_receiver_flow_attr_callback_set(struct rist_ctx *rist_ctx,
+                                         receiver_flow_attr_callback_t cb,
+                                         void *arg)
+{
+  if (RIST_UNLIKELY(!rist_ctx)) {
+    rist_log_priv3(RIST_LOG_ERROR,
+                   "ctx is null on rist_receiver_flow_attr_callback_set call!\n");
+    return -1;
+  }
+  if (RIST_UNLIKELY(rist_ctx->mode != RIST_RECEIVER_MODE ||
+                    !rist_ctx->receiver_ctx)) {
+    rist_log_priv3(RIST_LOG_ERROR, "rist_receiver_flow_attr_callback_set call with "
+                                   "CTX not set up for receiving\n");
+    return -1;
+  }
+  struct rist_receiver *ctx = rist_ctx->receiver_ctx;
+  ctx->receiver_flow_attr_callback = cb;
+  ctx->receiver_flow_attr_callback_argument = arg;
+  return 0;
+}
+
 /* Sender functions */
 int rist_sender_create(struct rist_ctx **_ctx, enum rist_profile profile,
 					   uint32_t flow_id, struct rist_logging_settings *logging_settings)
@@ -345,8 +365,7 @@ int rist_sender_create(struct rist_ctx **_ctx, enum rist_profile profile,
 
 	if (profile == RIST_PROFILE_ADVANCED)
 	{
-		rist_log_priv2(logging_settings, RIST_LOG_WARN, "Advanced profile not implemented yet, using main profile instead\n");
-		profile = RIST_PROFILE_MAIN;
+		rist_log_priv2(logging_settings, RIST_LOG_INFO, "Using Advanced profile (VSF TR-06-3)\n");
 	}
 
 	if (flow_id % 2 != 0)
@@ -579,16 +598,82 @@ int rist_sender_data_write(struct rist_ctx *rist_ctx, const struct rist_data_blo
 		return -1;
 	}
 
-	uint64_t ts_ntp = data_block->ts_ntp == 0 ? timestampNTP_u64() : data_block->ts_ntp;
-	uint32_t seq_rtp;
-	if (data_block->flags & RIST_DATA_FLAGS_USE_SEQ)
-		seq_rtp = (uint32_t)data_block->seq;
-	else
-		seq_rtp = ctx->common.seq_rtp++;
-	//When we support 32bit seq this should be changed
-	seq_rtp = seq_rtp & (UINT16_MAX);
+	if (RIST_UNLIKELY((data_block->flags & RIST_DATA_FLAGS_USE_SEQ) &&
+	                  ctx->split_mode != LIBRIST_SPLIT_MODE_OFF)) {
+		rist_log_priv(&ctx->common, RIST_LOG_ERROR,
+			"RIST_DATA_FLAGS_USE_SEQ cannot be used with split mode; "
+			"the library must control the wire sequence for pair "
+			"splitting. Use ts_ntp to preserve source timestamps.\n");
+		return -1;
+	}
 
-	int ret = rist_sender_enqueue(ctx, data_block->payload, data_block->payload_len, ts_ntp, data_block->virt_src_port, data_block->virt_dst_port, seq_rtp);
+	uint64_t ts_ntp = data_block->ts_ntp == 0 ? timestampNTP_u64() : data_block->ts_ntp;
+
+	const uint8_t *payload_to_send = data_block->payload;
+	size_t payload_len = data_block->payload_len;
+
+	bool actually_split = (ctx->split_mode != LIBRIST_SPLIT_MODE_OFF);
+	size_t first_len = 0;
+	size_t last_len = 0;
+	if (actually_split) {
+		if (ctx->split_mode == LIBRIST_SPLIT_MODE_AUTO) {
+			const uint8_t *p = payload_to_send;
+			if (payload_len >= 2 * 188 && payload_len % 188 == 0 && p[0] == 0x47) {
+				size_t ts_count = payload_len / 188;
+				size_t first_ts = ts_count / 2;
+				if (first_ts == 0)
+					first_ts = 1;
+				first_len = first_ts * 188;
+				last_len = payload_len - first_len;
+			} else {
+				ctx->stats_split_fallback_not_ts++;
+				first_len = payload_len / 2;
+				last_len = payload_len - first_len;
+			}
+		} else {
+			first_len = payload_len / 2;
+			last_len = payload_len - first_len;
+		}
+	}
+
+	uint32_t seq_rtp_first;
+	uint32_t seq_rtp_last = 0;
+	if (data_block->flags & RIST_DATA_FLAGS_USE_SEQ) {
+		seq_rtp_first = (uint32_t)data_block->seq;
+	} else if (actually_split) {
+		if (ctx->common.seq_rtp & 1)
+			ctx->common.seq_rtp++;
+		seq_rtp_first = ctx->common.seq_rtp++;
+		seq_rtp_last = ctx->common.seq_rtp++;
+	} else {
+		seq_rtp_first = ctx->common.seq_rtp++;
+	}
+	seq_rtp_first &= UINT16_MAX;
+	seq_rtp_last &= UINT16_MAX;
+
+	int ret;
+	if (actually_split) {
+		ret = rist_sender_enqueue(ctx, payload_to_send, first_len, ts_ntp,
+		                          data_block->virt_src_port,
+		                          data_block->virt_dst_port, seq_rtp_first);
+		if (ret == 0) {
+			ret = rist_sender_enqueue(ctx, payload_to_send + first_len, last_len,
+			                          ts_ntp, data_block->virt_src_port,
+			                          data_block->virt_dst_port, seq_rtp_last);
+			if (ret == 0) {
+				ctx->stats_pairs_emitted++;
+			} else {
+				rist_log_priv(&ctx->common, RIST_LOG_WARN,
+					"Split write: first half (seq %u) enqueued but second "
+					"half (seq %u) failed (ret=%d); receiver will see an "
+					"orphan.\n", seq_rtp_first, seq_rtp_last, ret);
+			}
+		}
+	} else {
+		ret = rist_sender_enqueue(ctx, payload_to_send, payload_len, ts_ntp,
+		                          data_block->virt_src_port,
+		                          data_block->virt_dst_port, seq_rtp_first);
+	}
 	// Wake up data/nack output thread when data comes in
 	if (pthread_cond_signal(&ctx->condition))
 		rist_log_priv(&ctx->common, RIST_LOG_ERROR, "Call to pthread_cond_signal failed.\n");
@@ -910,6 +995,8 @@ int rist_peer_config_defaults_set(struct rist_peer_config *peer_config)
 		peer_config->congestion_control_mode = RIST_DEFAULT_CONGESTION_CONTROL_MODE;
 		peer_config->min_retries = RIST_DEFAULT_MIN_RETRIES;
 		peer_config->max_retries = RIST_DEFAULT_MAX_RETRIES;
+		peer_config->split_mode = LIBRIST_SPLIT_MODE_OFF;
+		peer_config->merge_mode = LIBRIST_MERGE_MODE_OFF;
 		return 0;
 	}
 	else
@@ -955,6 +1042,17 @@ static int rist_receiver_peer_create(struct rist_receiver *ctx,
 	struct rist_peer *p = rist_receiver_peer_insert_local(ctx, config);
 	if (!p)
 		return -1;
+
+	if (config->version >= 1) {
+		if (ctx->common.PEERS == NULL) {
+			ctx->merge_mode = config->merge_mode;
+		} else if (ctx->merge_mode != config->merge_mode) {
+			rist_log_priv(&ctx->common, RIST_LOG_WARN,
+				"peer added with merge_mode=%u but the receiver is already "
+				"running with merge_mode=%u; new peer's merge config ignored\n",
+				config->merge_mode, ctx->merge_mode);
+		}
+	}
 
 	p->peer_ssrc = prand_u32();
 	if (ctx->common.profile == RIST_PROFILE_SIMPLE)
@@ -1008,6 +1106,23 @@ static int rist_sender_peer_create(struct rist_sender *ctx,
 
 	if (!newpeer)
 		return -1;
+
+	if (config->version >= 1) {
+		if (ctx->peer_lst_len == 0) {
+			ctx->split_mode = config->split_mode;
+		} else if (ctx->split_mode != config->split_mode) {
+			rist_log_priv(&ctx->common, RIST_LOG_WARN,
+				"peer added with split_mode=%u but the session is already "
+				"running with split_mode=%u; new peer's split config ignored\n",
+				config->split_mode, ctx->split_mode);
+		}
+		if (ctx->split_mode == LIBRIST_SPLIT_MODE_HALF) {
+			rist_log_priv(&ctx->common, RIST_LOG_WARN,
+				"split=half is active; the receiver MUST be configured with "
+				"merge=pairs or merge=auto, otherwise downstream consumers "
+				"will see runt payloads.\n");
+		}
+	}
 
 	// TODO: Validate config data (virt_dst_port != 0 for example)
 

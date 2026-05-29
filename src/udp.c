@@ -21,6 +21,8 @@
 #endif
 #include "crypto/psk.h"
 #include "mpegts.h"
+#include <lz4.h>
+#include "transport-private.h"
 #include <stdlib.h>
 #include <stddef.h>
 #include <errno.h>
@@ -66,7 +68,7 @@ void _librist_log_send_error(struct rist_peer *p, int sock_errno,
 	}
 }
 
-size_t rist_send_seq_rtcp(struct rist_peer *p, uint16_t seq_rtp, uint8_t payload_type, uint8_t *payload, size_t payload_len, uint64_t source_time, uint16_t src_port, uint16_t dst_port, bool retry, uint16_t ts_null_bytes)
+size_t rist_send_seq_rtcp(struct rist_peer *p, uint32_t seq_rtp, uint8_t payload_type, uint8_t *payload, size_t payload_len, uint64_t source_time, uint16_t src_port, uint16_t dst_port, bool retry, uint16_t ts_null_bytes)
 {
 	struct rist_common_ctx *ctx = get_cctx(p);
 	uint8_t *data;
@@ -76,6 +78,121 @@ size_t rist_send_seq_rtcp(struct rist_peer *p, uint16_t seq_rtp, uint8_t payload
 
 	uint8_t *_payload = NULL;
 	_payload = payload;
+
+	/* Advanced Profile (VSF TR-06-3): build RTP-based packet directly,
+	 * bypassing GRE framing entirely. Control and OOB are handled
+	 * separately through rist_adv_send_control(). */
+	if (ctx->profile == RIST_PROFILE_ADVANCED &&
+	    payload_type != RIST_PAYLOAD_TYPE_DATA_OOB &&
+	    payload_type != RIST_PAYLOAD_TYPE_RTCP &&
+	    payload_type != RIST_PAYLOAD_TYPE_RTCP_NACK) {
+		uint8_t adv_buf[RIST_MAX_PACKET_SIZE + RIST_ADV_MAX_FIXED_HEADER];
+		struct rist_adv_params params;
+		memset(&params, 0, sizeof(params));
+
+		params.seq = seq_rtp;
+		params.timestamp = (uint32_t)((source_time * 1000000ULL) >> 16);
+		params.ssrc = rist_adv_ssrc_protected(ctx->adv_ssrc_base);
+		params.enc_type = RIST_ADV_TYPE_DIRECT;
+		params.psk_mode = RIST_ADV_PSK_NONE;
+		params.lpc_mode = RIST_ADV_LPC_NONE;
+		params.first_frag = true;
+		params.last_frag = true;
+		params.expedite = false;
+		params.retransmit = retry;
+
+		struct rist_adv_flow_id fid;
+		if (dst_port || src_port) {
+			fid.outer = htons(dst_port);
+			fid.inner_hi = (uint8_t)((src_port >> 4) & 0xFF);
+			fid.inner_lo_sub = (uint8_t)((src_port & 0x0F) << 4);
+			params.flow_id = &fid;
+		}
+
+		uint8_t *wire_payload = payload;
+		size_t wire_payload_len = payload_len;
+		uint8_t lz4_buf[RIST_MAX_PACKET_SIZE];
+		uint8_t enc_buf[RIST_MAX_PACKET_SIZE];
+		uint8_t psk_iv_bytes[RIST_ADV_PSK_IV_SIZE];
+
+		if (p->compression && payload_len > 0) {
+			int bound = LZ4_compressBound((int)payload_len);
+			if (bound > 0 && (size_t)bound <= sizeof(lz4_buf)) {
+				int clen = LZ4_compress_default((const char *)payload,
+					(char *)lz4_buf, (int)payload_len, (int)sizeof(lz4_buf));
+				if (clen > 0 && (size_t)clen < payload_len) {
+					wire_payload = lz4_buf;
+					wire_payload_len = (size_t)clen;
+					params.lpc_mode = RIST_ADV_LPC_LZ4;
+				}
+			}
+		}
+
+		if (p->key_tx.key_size > 0) {
+			uint32_t seq_nbe = htobe32(seq_rtp);
+			params.psk_mode = RIST_ADV_PSK_AES_CTR;
+			uint8_t old_nonce[4];
+			memcpy(old_nonce, p->key_tx.gre_nonce, 4);
+			_librist_crypto_psk_encrypt(&p->key_tx, seq_nbe, 1,
+			                            wire_payload, enc_buf, wire_payload_len);
+			if (p->key_tx.csprng_failed) {
+				rist_log_priv(ctx, RIST_LOG_ERROR,
+					"Advanced Profile: PSK encrypt failed (CSPRNG)\n");
+				return 0;
+			}
+			if (memcmp(old_nonce, p->key_tx.gre_nonce, 4) != 0)
+				rist_adv_send_psk_nonce(p, p->key_tx.gre_nonce,
+				                        (uint16_t)p->key_tx.key_size);
+			wire_payload = enc_buf;
+			params.psk_nonce = p->key_tx.gre_nonce;
+			memcpy(psk_iv_bytes, &seq_nbe, sizeof(seq_nbe));
+			params.psk_iv = psk_iv_bytes;
+		}
+
+		int total = rist_adv_build(adv_buf, &params, wire_payload, wire_payload_len);
+		if (total < 0) {
+			rist_log_priv(ctx, RIST_LOG_ERROR, "Advanced Profile: failed to build packet\n");
+			return 0;
+		}
+
+		if (RIST_UNLIKELY((p->sender_ctx && p->sender_ctx->simulate_loss) ||
+		                   (p->receiver_ctx && p->receiver_ctx->simulate_loss))) {
+			uint16_t loss_percentage = p->sender_ctx ?
+				p->sender_ctx->loss_percentage : p->receiver_ctx->loss_percentage;
+			uint16_t compare = rand() % 1001;
+			if (compare <= loss_percentage) {
+				ret = total;
+				goto adv_out;
+			}
+		}
+
+		int retries_count = 0;
+		int errorcode = 0;
+		do {
+			ret = rist_transport_sendto(p, adv_buf, (size_t)total, 0);
+			if (RIST_UNLIKELY(ret < 0)) {
+				errorcode = errno;
+				retries_count++;
+			} else {
+				errorcode = 0;
+				break;
+			}
+		} while (errorcode == EAGAIN && retries_count < RIST_MAX_SEND_RETRIES);
+
+		if (RIST_UNLIKELY(ret < 0))
+			_librist_log_send_error(p, errorcode, (size_t)total, "advanced-profile sendto");
+
+adv_out:
+		if (ret > 0) {
+			p->stats_sender_instant.sent++;
+			if (ts_null_bytes)
+				p->stats_sender_instant.ts_null++;
+			p->stats_receiver_instant.sent_rtcp++;
+			rist_calculate_bitrate((size_t)ret, &p->bw);
+			rist_calculate_bitrate(ts_null_bytes, &p->ts_nulls_bw);
+		}
+		return (size_t)ret;
+	}
 
 	// TODO: write directly on the payload to make it faster
 	uint8_t header_buf[RIST_MAX_HEADER_SIZE] = {0};
@@ -145,7 +262,7 @@ size_t rist_send_seq_rtcp(struct rist_peer *p, uint16_t seq_rtp, uint8_t payload
 	if (ctx->profile == RIST_PROFILE_SIMPLE) {
 		// retry when kernel buffer is full instead of dropping packet (EAGAIN)
 		do {
-			ret = sendto(p->sd,(const char*)data, len, 0, &(p->u.address), p->address_len);
+			ret = rist_transport_sendto(p, data, len, 0);
 			if (RIST_UNLIKELY(ret < 0))
 			{
 				errorcode = errno;
@@ -205,7 +322,7 @@ int rist_send_common_rtcp(struct rist_peer *p, uint8_t payload_type, uint8_t *pa
 	if (RIST_UNLIKELY(p->config.timing_mode == RIST_TIMING_MODE_ARRIVAL) && !p->receiver_mode)
 		source_time = timestampNTP_u64();
 
-	size_t ret = rist_send_seq_rtcp(p, (uint16_t)seq_rtp, payload_type, payload, payload_len, source_time, src_port, dst_port, false, ts_null_bytes);
+	size_t ret = rist_send_seq_rtcp(p, seq_rtp, payload_type, payload, payload_len, source_time, src_port, dst_port, false, ts_null_bytes);
 
 	if ((!p->compression && ret < payload_len) || ret == (size_t)-1)
 	{
@@ -526,11 +643,54 @@ int rist_receiver_periodic_rtcp(struct rist_peer *peer) {
 	return rist_send_common_rtcp(peer, payload_type, &rtcp_buf[RIST_MAX_PAYLOAD_OFFSET], payload_len, 0, peer->local_port, peer->remote_port, 0, 0);
 }
 
+static int rist_receiver_send_nacks_advanced(struct rist_peer *peer, uint32_t seq_array[], size_t array_len)
+{
+	struct rist_common_ctx *ctx = get_cctx(peer);
+	uint32_t media_ssrc = rist_adv_ssrc_protected(ctx->adv_ssrc_base);
+
+	if (peer->receiver_ctx->nack_type == RIST_NACK_BITMASK) {
+		uint32_t pss = seq_array[0];
+		uint32_t blp = 0;
+		for (size_t i = 1; i < array_len; i++) {
+			uint32_t offset = seq_array[i] - pss;
+			if (offset >= 1 && offset <= 32) {
+				blp |= (1u << (offset - 1));
+			} else {
+				rist_adv_send_nack_bitmask(peer, media_ssrc, pss, blp);
+				pss = seq_array[i];
+				blp = 0;
+			}
+		}
+		rist_adv_send_nack_bitmask(peer, media_ssrc, pss, blp);
+	} else {
+		uint32_t pss = seq_array[0];
+		uint32_t nalp = 0;
+		for (size_t i = 1; i < array_len; i++) {
+			if (seq_array[i] == pss + nalp + 1) {
+				nalp++;
+			} else {
+				rist_adv_send_nack_range(peer, media_ssrc, pss, nalp);
+				pss = seq_array[i];
+				nalp = 0;
+			}
+		}
+		rist_adv_send_nack_range(peer, media_ssrc, pss, nalp);
+	}
+	return 0;
+}
+
 int rist_receiver_send_nacks(struct rist_peer *peer, uint32_t seq_array[], size_t array_len)
 {
 	if (get_cctx(peer)->debug && array_len > 0)
 		rist_log_priv(get_cctx(peer), RIST_LOG_DEBUG, "Sending %zu nacks starting with %"PRIu32"\n",
 		array_len, seq_array[0]);
+
+	if (get_cctx(peer)->profile == RIST_PROFILE_ADVANCED &&
+	    peer->is_advanced && peer->remote_supports_advanced &&
+	    array_len > 0) {
+		return rist_receiver_send_nacks_advanced(peer, seq_array, array_len);
+	}
+
 	uint8_t payload_type = RIST_PAYLOAD_TYPE_RTCP;
 	uint8_t *rtcp_buf = get_cctx(peer)->buf.rtcp;
 
@@ -538,11 +698,9 @@ int rist_receiver_send_nacks(struct rist_peer *peer, uint32_t seq_array[], size_
 	rist_rtcp_write_empty_rr(rtcp_buf, &payload_len, peer->adv_flow_id);
 	rist_rtcp_write_sdes(rtcp_buf, &payload_len, peer->cname, peer->adv_flow_id);
 	if (RIST_LIKELY(array_len > 0)) {
-		// Add nack requests (if any)
 		struct rist_rtp_nack_record *rec;
 		uint32_t fci_count = 1;
 
-		// Now the NACK message
 		if (peer->receiver_ctx->nack_type == RIST_NACK_BITMASK)
 		{
 			struct rist_rtcp_nack_bitmask *rtcp = (struct rist_rtcp_nack_bitmask *)(rtcp_buf + RIST_MAX_PAYLOAD_OFFSET + payload_len);
@@ -742,6 +900,7 @@ void rist_sender_send_data_balanced(struct rist_sender *ctx, struct rist_buffer 
 
 	//We can do it safely here, since this function is only to be called once per packet
 	buffer->seq = ctx->common.seq++;
+	uint32_t wire_seq = (ctx->common.profile == RIST_PROFILE_ADVANCED) ? buffer->seq : (uint32_t)buffer->seq_rtp;
 	uint64_t now = timestampNTP_u64();
 
 peer_select:
@@ -789,13 +948,13 @@ peer_select:
 #endif
 					if (child->authenticated && child->is_data && (!child->dead || (child->dead && (child->dead_since + peer->recovery_buffer_ticks) < now))) {
 						uint8_t *payload = buffer->data;
-						rist_send_common_rtcp(child, buffer->type, &payload[RIST_MAX_PAYLOAD_OFFSET], buffer->size, buffer->source_time, buffer->src_port, buffer->dst_port, buffer->seq_rtp, buffer->ts_null_bytes);
+						rist_send_common_rtcp(child, buffer->type, &payload[RIST_MAX_PAYLOAD_OFFSET], buffer->size, buffer->source_time, buffer->src_port, buffer->dst_port, wire_seq, buffer->ts_null_bytes);
 					}
 					child = child->sibling_next;
 				}
 			} else if (!peer->dead || (peer->dead && (peer->dead_since + peer->recovery_buffer_ticks) < now)) {
 				uint8_t *payload = buffer->data;
-				rist_send_common_rtcp(peer, buffer->type, &payload[RIST_MAX_PAYLOAD_OFFSET], buffer->size, buffer->source_time, buffer->src_port, buffer->dst_port, buffer->seq_rtp, buffer->ts_null_bytes);
+				rist_send_common_rtcp(peer, buffer->type, &payload[RIST_MAX_PAYLOAD_OFFSET], buffer->size, buffer->source_time, buffer->src_port, buffer->dst_port, wire_seq, buffer->ts_null_bytes);
 			}
 		} else {
 			/* Election of next peer */
@@ -821,13 +980,13 @@ peer_select:
 #endif
 				if (child->authenticated && child->is_data && (!child->dead || (child->dead && (child->dead_since + peer->recovery_buffer_ticks) < now))) {
 					uint8_t *payload = buffer->data;
-					rist_send_common_rtcp(child, buffer->type, &payload[RIST_MAX_PAYLOAD_OFFSET], buffer->size, buffer->source_time, buffer->src_port, buffer->dst_port,  buffer->seq_rtp, buffer->ts_null_bytes);
+					rist_send_common_rtcp(child, buffer->type, &payload[RIST_MAX_PAYLOAD_OFFSET], buffer->size, buffer->source_time, buffer->src_port, buffer->dst_port, wire_seq, buffer->ts_null_bytes);
 				}
 				child = child->sibling_next;
 			}
 		} else if (!peer->dead || (peer->dead && (peer->dead_since + peer->recovery_buffer_ticks) < now)) {
 			uint8_t *payload = buffer->data;
-			rist_send_common_rtcp(peer, buffer->type, &payload[RIST_MAX_PAYLOAD_OFFSET], buffer->size, buffer->source_time, buffer->src_port, buffer->dst_port, buffer->seq_rtp,  buffer->ts_null_bytes);
+			rist_send_common_rtcp(peer, buffer->type, &payload[RIST_MAX_PAYLOAD_OFFSET], buffer->size, buffer->source_time, buffer->src_port, buffer->dst_port, wire_seq, buffer->ts_null_bytes);
 		}
 		ctx->weight_counter--;
 		peer->w_count--;
@@ -846,8 +1005,9 @@ peer_select:
 
 static size_t rist_sender_index_get(struct rist_sender *ctx, uint32_t seq)
 {
-	size_t idx = ctx->seq_index[(uint16_t)seq];
-	return idx;
+	if (ctx->common.profile == RIST_PROFILE_ADVANCED)
+		return ctx->seq_index[seq & (ctx->sender_queue_max - 1)];
+	return ctx->seq_index[(uint16_t)seq];
 }
 
 size_t rist_get_sender_retry_queue_size(struct rist_sender *ctx)
@@ -892,11 +1052,14 @@ ssize_t rist_retry_dequeue(struct rist_sender *ctx)
 			rist_get_sender_retry_queue_size(ctx));
 		retry->peer->stats_sender_instant.retrans_skip++;
 		return -1;
-	} else if (RIST_UNLIKELY((uint16_t)retry->seq != ctx->sender_queue[idx]->seq_rtp)) {
+	} else if (RIST_UNLIKELY(
+		ctx->common.profile == RIST_PROFILE_ADVANCED
+			? (retry->seq != ctx->sender_queue[idx]->seq)
+			: ((uint16_t)retry->seq != ctx->sender_queue[idx]->seq_rtp))) {
 		rist_log_priv(&ctx->common, RIST_LOG_DEBUG,
-			" Couldn't find block %" PRIu16 " (i=%zu/r=%zu/w=%zu/d=%zu/rs=%zu), found an old one instead %" PRIu32 " (%" PRIu64 "), bitrate is too high\n",
-			(uint16_t)retry->seq, idx, atomic_load_explicit(&ctx->sender_queue_read_index, memory_order_acquire), atomic_load_explicit(&ctx->sender_queue_write_index, memory_order_acquire), ctx->sender_queue_delete_index,
-			rist_get_sender_retry_queue_size(ctx), ctx->sender_queue[idx]->seq_rtp, ctx->sender_queue_max);
+			" Couldn't find block %" PRIu32 " (i=%zu/r=%zu/w=%zu/d=%zu/rs=%zu), found an old one instead %" PRIu32 " (%" PRIu64 "), bitrate is too high\n",
+			retry->seq, idx, atomic_load_explicit(&ctx->sender_queue_read_index, memory_order_acquire), atomic_load_explicit(&ctx->sender_queue_write_index, memory_order_acquire), ctx->sender_queue_delete_index,
+			rist_get_sender_retry_queue_size(ctx), ctx->sender_queue[idx]->seq, ctx->sender_queue_max);
 		retry->peer->stats_sender_instant.retrans_skip++;
 		return -1;
 	}
@@ -975,11 +1138,12 @@ ssize_t rist_retry_dequeue(struct rist_sender *ctx)
 	uint16_t src_port = buffer->src_port;
 	if (src_port == 0)
 		src_port = 32768 + retry->peer->peer_data->adv_peer_id;
-	ret = rist_send_seq_rtcp(retry->peer->peer_data, buffer->seq_rtp, buffer->type, &payload[RIST_MAX_PAYLOAD_OFFSET], buffer->size, buffer->source_time, src_port, (retry->peer->peer_data->config.virt_dst_port & ~1UL), true, ctx->sender_queue[idx]->ts_null_bytes);
+	uint32_t retry_wire_seq = (ctx->common.profile == RIST_PROFILE_ADVANCED) ? buffer->seq : (uint32_t)buffer->seq_rtp;
+	ret = rist_send_seq_rtcp(retry->peer->peer_data, retry_wire_seq, buffer->type, &payload[RIST_MAX_PAYLOAD_OFFSET], buffer->size, buffer->source_time, src_port, (retry->peer->peer_data->config.virt_dst_port & ~1UL), true, ctx->sender_queue[idx]->ts_null_bytes);
 	// update bandwidth value
 	rist_calculate_bitrate(ret, retry_bw);
 
-	if ((ret == (size_t)-1) || (ret < buffer->size)) {
+	if ((ret == (size_t)-1) || (!retry->peer->peer_data->compression && ret < buffer->size)) {
 		rist_log_priv(&ctx->common, RIST_LOG_ERROR,
 			"Resending of packet failed %zu != %zu for seq %"PRIu32"\n", ret, buffer->size, retry->seq);
 		retry->peer->stats_sender_instant.retrans_skip++;

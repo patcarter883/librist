@@ -99,8 +99,6 @@ RTCP Control Channel:
 
 #define NACK_FMT_BITMASK 1
 #define NACK_FMT_RANGE 0
-#define NACK_FMT_SEQEXT 1
-
 #define ECHO_REQUEST 2
 #define ECHO_RESPONSE 3
 
@@ -111,7 +109,6 @@ RTCP Control Channel:
 #define RTCP_SDES_FLAGS 0x81
 #define RTCP_NACK_RANGE_FLAGS 0x80
 #define RTCP_NACK_BITMASK_FLAGS 0x81
-#define RTCP_NACK_SEQEXT_FLAGS 0x81
 #define RTCP_ECHOEXT_REQ_FLAGS 0x82
 #define RTCP_ECHOEXT_RESP_FLAGS 0x83
 
@@ -171,16 +168,6 @@ RIST_PACKED_STRUCT(rist_rtcp_nack_bitmask,{
 	uint16_t len;
 	uint32_t ssrc_source;
 	uint32_t ssrc;
-})
-
-RIST_PACKED_STRUCT(rist_rtcp_seqext,{
-	uint8_t flags;
-	uint8_t ptype;
-	uint16_t len;
-	uint32_t ssrc;
-	uint8_t  name[4];
-	uint16_t seq_msb;
-	uint16_t reserved0;
 })
 
 RIST_PACKED_STRUCT(rist_rtcp_echoext, {

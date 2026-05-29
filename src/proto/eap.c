@@ -16,6 +16,7 @@
 #include "librist_srp.h"
 #include "rist-private.h"
 #include "udp-private.h"
+#include "transport-private.h"
 #include "log-private.h"
 #include "proto/rist_time.h"
 #include "peer.h"
@@ -942,7 +943,7 @@ static void eap_periodic_impl(struct eapsrp_ctx *ctx)
 	{
 		if (ctx->last_pkt)
 		{
-			sendto(ctx->peer->sd, (const char *)ctx->last_pkt, ctx->last_pkt_size, 0, &ctx->peer->u.address, ctx->peer->address_len);
+			rist_transport_sendto(ctx->peer, ctx->last_pkt, ctx->last_pkt_size, 0);
 			//check
 			ctx->timeout_retries++;
 			ctx->last_timestamp = now;

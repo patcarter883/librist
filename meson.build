@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD-2-Clause
 
 project('libRIST', 'c',
-	version: '0.2.16',
+	version: '0.2.17',
 	default_options: ['c_std=c99', 'warning_level=3', 'libdir=lib'],
         meson_version: '>= 0.51.0')
 
@@ -17,9 +17,9 @@ cdata = configuration_data()
 #If any interfaces have been added, removed, or changed since the last update, increment current, and set revision to 0.
 #If any interfaces have been added since the last public release, then increment age.
 #If any interfaces have been removed or changed since the last public release, then set age to 0.
-librist_abi_current = 10
-librist_abi_revision = 4
-librist_abi_age = 6
+librist_abi_current = 11
+librist_abi_revision = 0
+librist_abi_age = 7
 librist_soversion = librist_abi_current - librist_abi_age
 librist_version = '@0@.@1@.@2@'.format(librist_abi_current - librist_abi_age, librist_abi_age, librist_abi_revision)
 
@@ -30,7 +30,7 @@ librist_version = '@0@.@1@.@2@'.format(librist_abi_current - librist_abi_age, li
 #PATCH not used (doesn't make sense for API version, remains here for backwards compat)
 
 librist_api_version_major = 4
-librist_api_version_minor = 7
+librist_api_version_minor = 8
 librist_api_version_patch = 0
 
 librist_src_root = meson.current_source_dir()
@@ -40,7 +40,7 @@ platform_files = []
 inc = []
 inc += include_directories('.', 'src', 'include/librist', 'include', 'contrib')
 
-#builtin_lz4 = get_option('builtin_lz4')
+builtin_lz4 = get_option('builtin_lz4')
 builtin_cjson = get_option('builtin_cjson')
 builtin_mbedtls = get_option('builtin_mbedtls')
 
@@ -161,16 +161,23 @@ void test(void) {
 	elif host_machine.system() == 'gnu'
 		test_args += '-D_GNU_SOURCE'
 		add_project_arguments('-D_GNU_SOURCE', language: 'c')
+	elif host_machine.system() == 'emscripten'
+		platform_files += 'src/tun_emscripten.c'
+		add_project_arguments('-D_GNU_SOURCE', language: 'c')
 	endif
 	librist_soversion = librist_soversion
-	have_clock_gettime = cc.has_function('clock_gettime', prefix : '#include <time.h>', args : test_args)
-	if not have_clock_gettime and host_machine.system() != 'darwin'
-		lib_rt = cc.find_library('rt', required: false)
-		have_clock_gettime = cc.has_function('clock_gettime', prefix : '#include <time.h>', args : test_args, dependencies : lib_rt)
-		if not have_clock_gettime
-			error('clock_gettime not found')
+	if host_machine.system() == 'emscripten'
+		have_clock_gettime = true
+	else
+		have_clock_gettime = cc.has_function('clock_gettime', prefix : '#include <time.h>', args : test_args)
+		if not have_clock_gettime and host_machine.system() != 'darwin'
+			lib_rt = cc.find_library('rt', required: false)
+			have_clock_gettime = cc.has_function('clock_gettime', prefix : '#include <time.h>', args : test_args, dependencies : lib_rt)
+			if not have_clock_gettime
+				error('clock_gettime not found')
+			endif
+			deps += [ lib_rt ]
 		endif
-		deps += [ lib_rt ]
 	endif
 	add_project_arguments(['-Wshadow', '-pedantic-errors'], language: 'c')
 	add_project_arguments(cc.get_supported_arguments([
@@ -184,8 +191,10 @@ void test(void) {
 		'-Wmaybe-uninitialized',
 		'-Wno-error=deprecated-declarations'
 		]), language : 'c')
-	threads = [ dependency('threads') ]
-	if host_machine.system() != 'freebsd'
+	if host_machine.system() != 'emscripten'
+		threads = [ dependency('threads') ]
+	endif
+	if host_machine.system() != 'freebsd' and host_machine.system() != 'emscripten'
 	  add_project_arguments(cc.get_supported_arguments([
             '-Watomic-implicit-seq-cst']), language: 'c')
 	endif
@@ -255,6 +264,22 @@ if builtin_cjson
 	cjson_lib = declare_dependency( compile_args : '-DCJSON_HIDE_SYMBOLS',
 									sources: 'contrib/contrib_cJSON/cjson/cJSON.c',
 									include_directories : include_directories('contrib/contrib_cJSON'))
+endif
+
+if not builtin_lz4
+	lz4_lib = dependency('liblz4', required: false)
+	if not lz4_lib.found()
+		lz4_lib = cc.find_library('lz4', required: required_library, has_headers: ['lz4.h'])
+		if not lz4_lib.found()
+			builtin_lz4 = true
+		endif
+	endif
+endif
+if builtin_lz4
+	message('Using builtin LZ4 library')
+	lz4_lib = declare_dependency(
+		sources: 'contrib/lz4/lz4.c',
+		include_directories : include_directories('contrib/lz4'))
 endif
 
 crypto_deps = []
@@ -330,6 +355,8 @@ librist = library('librist',
 	'src/flow.c',
 	'src/logging.c',
 	'src/network.c',
+	'src/adv.c',
+	'src/adv_ctrl.c',
 	'src/rist.c',
 	'src/rist-common.c',
 	'src/rist_ref.c',
@@ -337,6 +364,7 @@ librist = library('librist',
 	'src/mpegts.c',
 	'src/peer.c',
 	'src/udp.c',
+	'src/transport.c',
 	'src/stats.c',
 	'src/udpsocket.c',
 	'src/libevsocket.c',
@@ -351,6 +379,7 @@ librist = library('librist',
 		deps,
 		stdatomic_dependency,
 		cjson_lib,
+		lz4_lib,
 	],
 	name_prefix : '',
 	version: librist_version,

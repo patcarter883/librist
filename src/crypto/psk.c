@@ -346,3 +346,16 @@ void _librist_crypto_psk_get_passphrase(struct rist_key *key, const uint8_t **pa
 void _librist_crypto_psk_encrypt_continue(struct rist_key *key, const uint8_t inbuf[], uint8_t outbuf[], size_t payload_len) {
 	_librist_crypto_psk_aes_ctr(key, inbuf, outbuf, payload_len);
 }
+
+void _librist_crypto_psk_preannounce_nonce(struct rist_key *key, const uint8_t nonce[4], uint32_t key_size_bits) {
+	uint32_t nonce_val;
+	memcpy(&nonce_val, nonce, sizeof(nonce_val));
+	if (!nonce_val)
+		return;
+	if (memcmp(nonce, key->gre_nonce, sizeof(key->gre_nonce)) == 0)
+		return;
+	if (key_size_bits)
+		key->key_size = key_size_bits;
+	memcpy(key->gre_nonce, nonce, sizeof(key->gre_nonce));
+	_librist_crypto_aes_key(key);
+}

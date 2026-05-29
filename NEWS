@@ -5,8 +5,69 @@ A library implementing the Video Services Forum (VSF) Technical
 Recommendations TR-06-1 (Simple Profile) and TR-06-2 (Main Profile).
 
 
-Changes for next release:
--------------------------
+Changes for 0.2.17 (pre-release):
+---------------------------------
+
+ABI/API:
+  - ABI version 11:0:7 (soversion 4, binary-compatible with 0.2.15)
+  - API version 4.8.0 (new features, backwards-compatible)
+
+New Features:
+
+  Pluggable Transport Abstraction (transport.h):
+  - New rist_transport_ops vtable replaces direct socket syscalls with
+    user-supplied callbacks (sendto, recvfrom, socket, bind, close,
+    setsockopt, poll).  Enables librist on non-POSIX platforms such as
+    WebAssembly/WebTransport, userspace network stacks, or unit-test
+    harnesses.
+  - New rist_transport_set() installs custom transport ops on a context.
+  - Default ops delegate to real syscalls so existing behaviour is
+    unchanged.
+
+  Packet Split / Merge (peer.h):
+  - Sender: split each application write into an even/odd sequence pair
+    when the payload exceeds half the path MTU.  Controlled by
+    split_mode in rist_peer_config (off, auto, half).
+  - Receiver: transparently merge split pairs before delivery.
+    Controlled by merge_mode in rist_peer_config (off, pairs, auto).
+  - Keepalive advertises split capability via the L bit; receiver
+    auto-detects when the sender supports it.
+  - URL parameters: ?split=off|auto|half, ?merge=off|pairs|auto.
+  - Split/merge counters surfaced in JSON statistics.
+  - risttunnel auto-enables split+merge when MTU < 1400.
+
+  Advanced Profile (VSF TR-06-3):
+  - Wire format and protocol integration for the Advanced Profile as
+    defined by VSF TR-06-3.
+  - Native control plane: Keep-Alive with I bit (CI=0x8000), RTT Echo
+    Request/Response (CI=0x0010/0x0011), NACK Bitmask (CI=0x0000),
+    NACK Range (CI=0x0001), Unsupported Response (CI=0x8020).
+  - Full 32-bit sequence number indexing (expanded seq_index array).
+  - Type 8 GRE-over-AP encapsulation for Section 9 interoperability.
+  - PSK encryption mode 1 (AES-CTR, Main Profile compatible) with
+    per-packet Nonce/IV in the AP header.
+  - Future Nonce Announcement (CI=0x8011) for zero-latency key rotation.
+  - Flow ID field (I flag): virt_dst_port and virt_src_port map to/from
+    the AP Outer/Inner Flow ID hierarchy on the wire.
+  - LZ4 payload compression (LPC=1): sender compresses before encryption,
+    receiver decompresses after decryption.  Controlled by the existing
+    ?compression=1 URL parameter; receiver auto-detects via the LPC field.
+    Bundled LZ4 library in contrib/lz4/ with system-library fallback.
+  - Flow Attribute messages (CI=0x8001): sender periodically transmits
+    session/flow metadata as JSON.  New receiver callback API
+    (rist_receiver_flow_attr_callback_set) delivers parsed attributes
+    to the application.
+  - Baseline.Direct conformance for single-flow encrypted point-to-point
+    RIST transport with ARQ.
+  - 18 integration tests (basic, packet loss, encryption, mismatch,
+    flow-id, lz4, lz4+encryption, flow-attr).
+  - 187 unit tests (wire format, timestamp, seq_index, Type 8, PSK modes,
+    Flow ID mapping, LZ4 roundtrip, flow-attr control roundtrip).
+
+  WebAssembly / Emscripten:
+  - TUN device stubs for Emscripten targets.
+  - Meson cross-file (wasm32-emscripten.txt) for WASM builds.
+  - C99 strict-aliasing fix for merge memcpy.
 
 RTCP/NACK:
  - Fix OOB read in NACK_FMT_SEQEXT handler: the RTCP feedback loop

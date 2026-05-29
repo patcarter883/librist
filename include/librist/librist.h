@@ -21,6 +21,7 @@
 #include "headers.h"
 #include "tun.h"
 #include "tunnel.h"
+#include "transport.h"
 
 #ifdef __cplusplus
 extern "C" {

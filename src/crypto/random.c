@@ -7,7 +7,6 @@
 
 #include <mbedtls/ctr_drbg.h>
 #include <mbedtls/entropy.h>
-#include <mbedtls/entropy_poll.h>
 
 #include "pthread-shim.h"
 #include "vcs_version.h"

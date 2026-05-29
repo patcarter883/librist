@@ -594,6 +594,10 @@ static int receiver_enqueue(struct rist_peer *peer, uint64_t source_time, uint64
 				seq, idx_initial, source_time, peer->flow->time_offset / RIST_CLOCK, idx_initial);
 		uint64_t packet_time = source_time + f->time_offset;
 
+		f->last_packet_ts = packet_time;
+		f->time_offset_changed_ts = 0;
+		f->time_offset_old = f->time_offset;
+
 		receiver_insert_queue_packet(f, peer, idx_initial, buf, len, seq, source_time, src_port, dst_port, packet_time);
 		atomic_store_explicit(&f->receiver_queue_output_idx, idx_initial, memory_order_release);
 
@@ -3164,7 +3168,11 @@ static void rist_oob_dequeue(struct rist_common_ctx *ctx, int maxcount)
 		uint8_t *payload = oob_buffer->data;
 		struct rist_peer *p = oob_buffer->peer;
 		if (p->listening) {
-			/* Listener peer: send OOB to all alive child peers */
+			/* Listener peer: send OOB to all alive child peers.
+			 * Hold peerlist_lock while walking the child list to
+			 * prevent a concurrent peer add/remove from freeing a
+			 * sibling_next pointer underneath us. */
+			pthread_mutex_lock(&ctx->peerlist_lock);
 			struct rist_peer *child = p->child;
 			bool sent = false;
 			while (child) {
@@ -3175,6 +3183,7 @@ static void rist_oob_dequeue(struct rist_common_ctx *ctx, int maxcount)
 				}
 				child = child->sibling_next;
 			}
+			pthread_mutex_unlock(&ctx->peerlist_lock);
 			if (!sent)
 				rist_log_priv(ctx, RIST_LOG_WARN, "OOB: listener peer has no alive children, dropping\n");
 		} else {

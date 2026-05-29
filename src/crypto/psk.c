@@ -35,8 +35,9 @@
 //TODO: handle failures?
 int _librist_crypto_psk_rist_key_init(struct rist_key *key, uint32_t key_size, uint32_t rotation, const char *password, bool odd)
 {
-	key->password_len = strlen(password);
+	key->password_len = strnlen(password, sizeof(key->password) - 1);
 	memcpy(key->password, password, key->password_len);
+	key->password[key->password_len] = '\0';
 	key->key_size = key_size;
 	key->key_rotation = rotation;
 #if HAVE_MBEDTLS
@@ -67,7 +68,8 @@ int _librist_crypto_psk_rist_key_destroy(struct rist_key *key)
 int _librist_crypto_psk_rist_key_clone(struct rist_key *key_in, struct rist_key *key_out)
 {
 	key_out->password_len = key_in->password_len;
-    memcpy(key_out->password, key_in->password, key_in->password_len);
+	memcpy(key_out->password, key_in->password, key_in->password_len);
+	key_out->password[key_out->password_len] = '\0';
     key_out->key_size = key_in->key_size;
     key_out->key_rotation = key_in->key_rotation;
 #if HAVE_MBEDTLS
@@ -278,8 +280,10 @@ void _librist_crypto_psk_decrypt(struct rist_key *key, uint8_t nonce[4], uint32_
             return;
         memcpy(key->gre_nonce, nonce, sizeof(key->gre_nonce));
         _librist_crypto_aes_key(key);
-        key->bad_decryption = false;
-        key->bad_count = 0;
+        /* Only clear the flag if _librist_crypto_aes_key succeeded;
+         * it sets bad_decryption=true on PBKDF2/setup failure. */
+        if (!key->bad_decryption)
+            key->bad_count = 0;
     }
 
     if (key->used_times > RIST_AES_KEY_REUSE_TIMES) {

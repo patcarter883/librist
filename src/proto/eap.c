@@ -238,7 +238,6 @@ static int process_eap_request_srp_challenge(struct eapsrp_ctx *ctx, uint8_t ide
 	if (salt_len > len - offset)
 		return EAP_LENERR;
 
-	bool use_default_2048 = true;
 	uint8_t *salt = &pkt[offset];
 	uint8_t *g = NULL;
 	uint8_t *N = NULL;
@@ -263,8 +262,9 @@ static int process_eap_request_srp_challenge(struct eapsrp_ctx *ctx, uint8_t ide
 		if (N_len > EAP_MAX_MODULUS_BYTES)
 			return EAP_LENERR;
 	}
+	bool use_default_ng = (generator_len == 0);
 	librist_crypto_srp_client_ctx_free(ctx->client_ctx);
-	ctx->client_ctx = librist_crypto_srp_client_ctx_create(use_default_2048, N, N_len, g, generator_len, salt, salt_len, ctx->eapversion3);
+	ctx->client_ctx = librist_crypto_srp_client_ctx_create(use_default_ng, N, N_len, g, generator_len, salt, salt_len, ctx->eapversion3);
 	if (ctx->client_ctx == NULL)
 		return EAP_INTERNALERR;
 	uint8_t response[1500] = {0};
@@ -387,8 +387,6 @@ static int process_eap_request(struct eapsrp_ctx *ctx, uint8_t pkt[], size_t len
 {
 	if (len < 1)
 		return EAP_LENERR;
-	/* Record in-flight identifier for FAILURE matching. */
-	ctx->last_identifier = identifier;
 	uint8_t type = pkt[0];
 	if (type == EAP_TYPE_IDENTITY)
 		return process_eap_request_identity(ctx, identifier);
@@ -400,6 +398,11 @@ static int process_eap_request(struct eapsrp_ctx *ctx, uint8_t pkt[], size_t len
 		if (subtype != EAP_SRP_SUBTYPE_PASSWORD_REQUEST_RESPONSE && ctx->config.role == EAP_ROLE_AUTHENTICATOR)
 			return EAP_UNEXPECTEDREQUEST;
 
+		/* Record identifier for FAILURE matching only after validation
+		 * passes.  Moving this out of the prologue prevents an
+		 * unauthenticated spoofed REQUEST from priming last_identifier
+		 * and defeating the FAILURE-identifier gate. */
+		ctx->last_identifier = identifier;
 		switch (subtype)
 		{
 			case EAP_SRP_SUBTYPE_CHALLENGE:
@@ -601,10 +604,22 @@ static int process_eap_response_srp_server_validator(struct eapsrp_ctx *ctx)
 }
 
 static int process_eap_response_passphrase(struct eapsrp_ctx *ctx, uint8_t identifier, size_t len, uint8_t pkt[]) {
-	if (ctx->authentication_state != EAP_AUTH_STATE_SUCCESS)//We cannot process it now,
+	if (ctx->authentication_state != EAP_AUTH_STATE_SUCCESS)
 		return 0;
 
-	// Need at least the flags byte (also avoids (len-1) underflow below)
+	/* If a solicited passphrase request is outstanding, only accept a
+	 * response whose identifier matches the request.  This prevents
+	 * replay or spoofed RESPONSEs from hijacking an active exchange.
+	 *
+	 * When no request is active the RESPONSE is an unsolicited
+	 * passphrase push (the protocol explicitly allows this — see
+	 * rist_eap_send_passphrase).  Its payload is AES-CTR encrypted
+	 * under the SRP session key, which provides integrity. */
+	bool matches_request = (ctx->passphrase_request_timer != 0 &&
+	                        identifier == ctx->passphrase_request_identifier);
+	if (ctx->passphrase_request_timer != 0 && !matches_request)
+		return 0;
+
 	if (len < 1)
 		return EAP_LENERR;
 	bool use_derived_key = CHECK_BIT(pkt[0], 7);
@@ -614,13 +629,13 @@ static int process_eap_response_passphrase(struct eapsrp_ctx *ctx, uint8_t ident
 	else
 		key = librist_crypto_srp_client_get_key(ctx->client_ctx);
 	if (use_derived_key) {
-		librist_peer_update_rx_passphrase(ctx->peer, key, SHA256_DIGEST_LENGTH, ctx->passphrase_request_timer != 0 && identifier == ctx->passphrase_request_identifier);
+		librist_peer_update_rx_passphrase(ctx->peer, key, SHA256_DIGEST_LENGTH, matches_request);
 	} else {
 		bool aes_256 = CHECK_BIT(pkt[0], 6);
 		uint8_t iv[16] = {0};
 		iv[15] = identifier;
 		_librist_crypto_aes_ctr(key, aes_256? 256: 128, iv, &pkt[1], &pkt[1], len -1);
-		librist_peer_update_rx_passphrase(ctx->peer, &pkt[1], len-1, ctx->passphrase_request_timer != 0 && identifier == ctx->passphrase_request_identifier);
+		librist_peer_update_rx_passphrase(ctx->peer, &pkt[1], len-1, matches_request);
 	}
 	uint8_t buf[EAPOL_EAP_HDRS_OFFSET];
 	if (ctx->passphrase_request_timer)
@@ -769,7 +784,10 @@ int eap_request_identity(struct eapsrp_ctx *ctx)
 {
 	uint8_t outpkt[EAPOL_EAP_HDRS_OFFSET +1];
 	outpkt[EAPOL_EAP_HDRS_OFFSET] = EAP_TYPE_IDENTITY;
-	ctx->last_identifier = (uint8_t)(prand_u32() >> 24);
+	uint32_t id_rand;
+	if (_librist_crypto_random_u32(&id_rand) != 0)
+		return -1;
+	ctx->last_identifier = (uint8_t)(id_rand >> 24);
 	return send_eapol_pkt(ctx, EAPOL_TYPE_EAP, EAP_CODE_REQUEST, ctx->last_identifier, 1, outpkt, ctx->eapversion3? 3 :2);
 }
 
@@ -788,8 +806,10 @@ int _librist_proto_eap_start(struct eapsrp_ctx *ctx)
 
 void eap_set_ip_string(struct eapsrp_ctx *ctx, char ip_string[])
 {
-	if (ctx != NULL)
-		memcpy(ctx->ip_string, ip_string, 46);
+	if (ctx != NULL) {
+		strncpy(ctx->ip_string, ip_string, sizeof(ctx->ip_string) - 1);
+		ctx->ip_string[sizeof(ctx->ip_string) - 1] = '\0';
+	}
 }
 
 int eap_clone_ctx(struct eapsrp_ctx *in, struct rist_peer *peer)

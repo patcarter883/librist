@@ -124,12 +124,13 @@ int rist_receiver_nack_type_set(struct rist_ctx *rist_ctx, enum rist_nack_type n
 	return 0;
 }
 
-static struct rist_flow *rist_get_longest_flow(struct rist_receiver *ctx, ssize_t *num)
+/* Find the flow with the most queued data.  Caller MUST hold
+ * ctx->common.flows_lock on entry; the lock remains held on return so
+ * the returned pointer stays valid until the caller releases it. */
+static struct rist_flow *rist_get_longest_flow_locked(struct rist_receiver *ctx, ssize_t *num)
 {
-	// Select the flow with highest queue count
 	ssize_t num_loop = 0;
 	struct rist_flow *f = NULL;
-	pthread_mutex_lock(&ctx->common.flows_lock);
 	struct rist_flow *f_loop = ctx->common.FLOWS;
 	while (f_loop) {
 		struct rist_flow *nextflow = f_loop->next;
@@ -144,7 +145,6 @@ static struct rist_flow *rist_get_longest_flow(struct rist_receiver *ctx, ssize_
 		}
 		f_loop = nextflow;
 	}
-	pthread_mutex_unlock(&ctx->common.flows_lock);
 	return f;
 }
 
@@ -169,30 +169,36 @@ int rist_receiver_data_read2(struct rist_ctx *rist_ctx, struct rist_data_block *
 	struct rist_receiver *ctx = rist_ctx->receiver_ctx;
 
 	struct rist_data_block *data_block = NULL;
-	/* We could enter the lock now, to read the counter. However performance penalties apply.
-	   The risks for not entering the lock are either sleeping too much (a packet gets added while we read)
-	   or not at all when we should (i.e.: the calling application is reading from multiple threads). Both
-	   risks are tolerable */
 
 	ssize_t num = 0;
-	// Select the flow with highest queue count to minimize jitter for calling app
-	struct rist_flow *f = rist_get_longest_flow(ctx, &num);
+	/* Hold flows_lock across the flow lookup and data read to prevent
+	 * rist_delete_flow from freeing the flow underneath us. */
+	pthread_mutex_lock(&ctx->common.flows_lock);
+	struct rist_flow *f = rist_get_longest_flow_locked(ctx, &num);
 	if (!num && timeout > 0)
 	{
+		pthread_mutex_unlock(&ctx->common.flows_lock);
 		pthread_mutex_lock(&(ctx->mutex));
 		pthread_cond_timedwait_ms(&(ctx->condition), &(ctx->mutex), timeout);
 		pthread_mutex_unlock(&(ctx->mutex));
-		f = rist_get_longest_flow(ctx, &num);
+		num = 0;
+		pthread_mutex_lock(&ctx->common.flows_lock);
+		f = rist_get_longest_flow_locked(ctx, &num);
 	}
 
 	if (RIST_UNLIKELY(!num || !f))
 	{
-		//No need to log, these can be triggered by gaps in data or low bitrate stream with low timeout values
-		//rist_log_priv3(RIST_LOG_ERROR, "rist_receiver_data_read call with no flow data, %d/%"PRIu32"\n", num, f);
+		pthread_mutex_unlock(&ctx->common.flows_lock);
 		return 0;
 	}
 
+	/* Lock the flow's own mutex while still holding flows_lock, then
+	 * release flows_lock.  This guarantees the flow pointer is valid
+	 * when we dereference it: rist_delete_flow takes flows_lock before
+	 * unlinking and freeing the flow. */
 	pthread_mutex_lock(&f->mutex);
+	pthread_mutex_unlock(&ctx->common.flows_lock);
+
 	unsigned long dataout_read_index = atomic_load_explicit(&f->dataout_fifo_queue_read_index, memory_order_relaxed);
 	size_t write_index = atomic_load_explicit(&f->dataout_fifo_queue_write_index, memory_order_acquire);
 	if (write_index != dataout_read_index)
@@ -207,7 +213,9 @@ int rist_receiver_data_read2(struct rist_ctx *rist_ctx, struct rist_data_block *
 			}
 		} while (num > 0);
 	}
+	bool overflow = atomic_load_explicit(&f->fifo_overflow, memory_order_relaxed);
 	pthread_mutex_unlock(&f->mutex);
+
 	if (data_block == NULL && num > 0)
 	{
 		rist_log_priv3(RIST_LOG_ERROR, "[rist_receiver_data_read2] data_block is NULL but num > 0 ! num=%zd, dataout_read_index=%lu, write_index=%zu\n", num, dataout_read_index, write_index);
@@ -216,7 +224,7 @@ int rist_receiver_data_read2(struct rist_ctx *rist_ctx, struct rist_data_block *
 
 	*data_buffer = data_block;
 
-	if (RIST_UNLIKELY(atomic_load_explicit(&f->fifo_overflow, memory_order_relaxed) == true))
+	if (RIST_UNLIKELY(overflow))
 		data_block->flags |= RIST_DATA_FLAGS_OVERFLOW;
 
 	return (int)num;
@@ -724,7 +732,7 @@ uint32_t rist_peer_get_cname(const struct rist_peer *peer, const char **cname)
 	if (peer)
 	{
 		*cname = &peer->cname[0];
-		return (uint32_t)strlen(*cname);
+		return (uint32_t)strnlen(*cname, RIST_MAX_STRING_SHORT);
 	}
 	else
 		return 0;
@@ -1013,8 +1021,7 @@ static int rist_sender_peer_create(struct rist_sender *ctx,
 		struct rist_peer *peer_rtcp = rist_sender_peer_insert_local(ctx, config, true);
 		if (!peer_rtcp)
 		{
-			// TODO: remove from peerlist (create sender_delete peer function)
-			free(newpeer);
+			rist_peer_remove(&ctx->common, newpeer, NULL);
 			return -1;
 		}
 		peer_rtcp->peer_data = newpeer;
@@ -1394,6 +1401,11 @@ int rist_receiver_set_output_fifo_size(struct rist_ctx *ctx, uint32_t desired_si
 	{
 		rist_log_priv2(ctx->receiver_ctx->common.logging_settings, RIST_LOG_ERROR, "rist_receiver_set_fifo_size must be called before starting\n");
 		return -3;
+	}
+	if (desired_size == 0 || desired_size > 65536)
+	{
+		rist_log_priv2(ctx->receiver_ctx->common.logging_settings, RIST_LOG_ERROR, "Desired fifo size must be between 1 and 65536\n");
+		return -4;
 	}
 	if ((desired_size & (desired_size -1)) != 0)
 	{

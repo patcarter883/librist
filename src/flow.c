@@ -150,22 +150,24 @@ void rist_delete_flow(struct rist_receiver *ctx, struct rist_flow *f)
 		}
 	}
 	free(f->dataout_fifo_queue);
-	// Delete flow
+	/* Unlink from the flow list under flows_lock so that concurrent
+	 * readers (rist_receiver_data_read2) cannot observe a dangling
+	 * pointer.  The free happens after the lock is released. */
 	rist_log_priv(&ctx->common, RIST_LOG_INFO, "Deleting flow\n");
+	pthread_mutex_lock(&ctx->common.flows_lock);
 	struct rist_flow **prev_flow = &ctx->common.FLOWS;
 	struct rist_flow *current_flow = *prev_flow;
 	while (current_flow)
 	{
 		if (current_flow == f) {
 			*prev_flow = current_flow->next;
-			free(current_flow);
-			current_flow = NULL;
 			break;
 		}
 		prev_flow = &current_flow->next;
 		current_flow = current_flow->next;
 	}
-
+	pthread_mutex_unlock(&ctx->common.flows_lock);
+	free(f);
 }
 
 static void rist_flow_append(struct rist_flow **FLOWS, struct rist_flow *f)

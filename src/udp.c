@@ -528,8 +528,8 @@ int rist_receiver_periodic_rtcp(struct rist_peer *peer) {
 
 int rist_receiver_send_nacks(struct rist_peer *peer, uint32_t seq_array[], size_t array_len)
 {
-	if (get_cctx(peer)->debug)
-		rist_log_priv(get_cctx(peer), RIST_LOG_DEBUG, "Sending %d nacks starting with %"PRIu32"\n",
+	if (get_cctx(peer)->debug && array_len > 0)
+		rist_log_priv(get_cctx(peer), RIST_LOG_DEBUG, "Sending %zu nacks starting with %"PRIu32"\n",
 		array_len, seq_array[0]);
 	uint8_t payload_type = RIST_PAYLOAD_TYPE_RTCP;
 	uint8_t *rtcp_buf = get_cctx(peer)->buf.rtcp;

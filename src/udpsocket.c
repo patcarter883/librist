@@ -331,9 +331,11 @@ int udpsocket_set_mcast_iface(int sd, const char *mciface, uint16_t family)
 }
 
 bool is_ip_address(const char *ipaddress, int family) {
-	struct sockaddr_in sa;
-	int result = inet_pton(family, ipaddress, &(sa.sin_addr));
-	return result == 1;
+	union {
+		struct in_addr v4;
+		struct in6_addr v6;
+	} buf;
+	return inet_pton(family, ipaddress, &buf) == 1;
 }
 
 int udpsocket_join_mcast_group(int sd, const char* miface, struct sockaddr* sa, uint16_t family) {

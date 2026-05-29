@@ -2906,9 +2906,9 @@ static void rist_peer_recv(struct evsocket_ctx *evctx, int fd, short revents, vo
 			} else if (vsf_subtype >= 0x8000){//Control messages
 				if (vsf_subtype == 0x8000) {
 					gre_proto = RIST_GRE_PROTOCOL_TYPE_KEEPALIVE;
-				} else if (vsf_subtype == 0x8001) {
-					//nonce announcements, we don't care
-					return;
+			} else if (vsf_subtype == 0x8001) {
+				/* Flow Attribute (Main Profile VSF extension) — not parsed here */
+				return;
 				} else if (vsf_subtype == RIST_VSF_PROTOCOL_SUBTYPE_BUFFER_NEGOTIATION) {
 					gre_proto = RIST_VSF_PROTOCOL_SUBTYPE_BUFFER_NEGOTIATION;
 				} else {
@@ -3754,9 +3754,13 @@ static void rist_peer_periodic(struct rist_peer *p, uint64_t now) {
 		}
 		if (get_cctx(p)->profile >= RIST_PROFILE_MAIN && p->next_keepalive_packet <= now) {
 			p->next_keepalive_packet = now + ONE_SECOND;
-			if (adv_negotiated)
+			if (adv_negotiated) {
 				rist_adv_send_keepalive(p);
-			else
+				if (p->sender_ctx && p->next_flow_attr <= now) {
+					p->next_flow_attr = now + ONE_SECOND;
+					rist_adv_send_flow_attr(p);
+				}
+			} else
 				_librist_proto_gre_send_keepalive(p, p->rist_gre_version);
 #if HAVE_SRP_SUPPORT
 			if (!p->child && !eap_is_authenticated(p->eap_ctx) && p->eap_authentication_state == 2 && p->parent && p->parent->multicast_sender)  {

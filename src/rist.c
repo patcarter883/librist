@@ -336,6 +336,27 @@ int rist_receiver_session_timeout_callback_set(struct rist_ctx *rist_ctx,
   return 0;
 }
 
+int rist_receiver_flow_attr_callback_set(struct rist_ctx *rist_ctx,
+                                         receiver_flow_attr_callback_t cb,
+                                         void *arg)
+{
+  if (RIST_UNLIKELY(!rist_ctx)) {
+    rist_log_priv3(RIST_LOG_ERROR,
+                   "ctx is null on rist_receiver_flow_attr_callback_set call!\n");
+    return -1;
+  }
+  if (RIST_UNLIKELY(rist_ctx->mode != RIST_RECEIVER_MODE ||
+                    !rist_ctx->receiver_ctx)) {
+    rist_log_priv3(RIST_LOG_ERROR, "rist_receiver_flow_attr_callback_set call with "
+                                   "CTX not set up for receiving\n");
+    return -1;
+  }
+  struct rist_receiver *ctx = rist_ctx->receiver_ctx;
+  ctx->receiver_flow_attr_callback = cb;
+  ctx->receiver_flow_attr_callback_argument = arg;
+  return 0;
+}
+
 /* Sender functions */
 int rist_sender_create(struct rist_ctx **_ctx, enum rist_profile profile,
 					   uint32_t flow_id, struct rist_logging_settings *logging_settings)

@@ -401,6 +401,10 @@ struct rist_receiver {
 	receiver_session_timeout_callback_t receiver_session_timeout_callback;
 	void *receiver_session_timeout_callback_argument;
 
+	/* Receiver flow attribute callback (Advanced Profile CI=0x8001) */
+	receiver_flow_attr_callback_t receiver_flow_attr_callback;
+	void *receiver_flow_attr_callback_argument;
+
 	/* Receiver thread variables */
 	bool protocol_running;
 	pthread_t receiver_thread;
@@ -656,6 +660,7 @@ struct rist_peer {
 	uint32_t rtcp_keepalive_interval;
 	uint64_t next_periodic_rtcp;
 	uint64_t next_keepalive_packet;
+	uint64_t next_flow_attr;
 	uint64_t session_timeout;
 	uint64_t last_pkt_received;
 	uint64_t last_sender_report_time;

@@ -543,6 +543,57 @@ static int test_lz4_header_roundtrip(void)
 	return 0;
 }
 
+static int test_flow_attr_control_roundtrip(void)
+{
+	printf("--- test_flow_attr_control_roundtrip ---\n");
+
+	uint8_t buf[2048];
+	const char *json = "{\"session\":\"test\",\"virt_dst_port\":5000,\"profile\":\"advanced\","
+	                   "\"flow_id\":5000,\"flow_inner\":0}";
+	size_t json_len = strlen(json);
+
+	/* Build a CI=0x8001 control body: CI(2) + Len(2) + JSON */
+	uint8_t ctrl[4 + 512];
+	size_t off = 0;
+	ctrl[off++] = (0x8001 >> 8) & 0xFF;
+	ctrl[off++] = 0x8001 & 0xFF;
+	uint16_t body_len = (uint16_t)json_len;
+	ctrl[off++] = (body_len >> 8) & 0xFF;
+	ctrl[off++] = body_len & 0xFF;
+	memcpy(&ctrl[off], json, json_len);
+	off += json_len;
+
+	/* Wrap in an AP Type 4 (Control) packet */
+	struct rist_adv_params params;
+	memset(&params, 0, sizeof(params));
+	params.seq = 777;
+	params.timestamp = 54321;
+	params.ssrc = 0x60 | 1; /* odd = unprotected */
+	params.enc_type = RIST_ADV_TYPE_CONTROL;
+	params.first_frag = true;
+	params.last_frag = true;
+	params.expedite = true;
+
+	int total = rist_adv_build(buf, &params, ctrl, off);
+	CHECK(total > 0, "build flow_attr control packet");
+
+	/* Parse the AP envelope */
+	struct rist_adv_parsed parsed;
+	CHECK(rist_adv_parse(buf, (size_t)total, &parsed) == 0, "parse flow_attr control");
+	CHECK(parsed.enc_type == RIST_ADV_TYPE_CONTROL, "enc_type should be CONTROL");
+	CHECK(parsed.payload_len >= 4, "control payload should be at least CI+Len");
+
+	/* Extract CI and body from the control payload */
+	const uint8_t *cp = parsed.payload;
+	uint16_t ci = (uint16_t)((cp[0] << 8) | cp[1]);
+	uint16_t bl = (uint16_t)((cp[2] << 8) | cp[3]);
+	CHECK(ci == 0x8001, "CI should be FLOW_ATTR");
+	CHECK(bl == json_len, "body length matches JSON length");
+	CHECK(memcmp(cp + 4, json, json_len) == 0, "JSON payload matches");
+
+	return 0;
+}
+
 int main(void)
 {
 	int failures = 0;
@@ -561,6 +612,7 @@ int main(void)
 	failures += test_seq32_index_full_range();
 	failures += test_flow_id_virt_port_mapping();
 	failures += test_lz4_header_roundtrip();
+	failures += test_flow_attr_control_roundtrip();
 
 	printf("Advanced Profile round-trip tests: %d/%d passed\n", pass_count, test_count);
 	if (failures) {

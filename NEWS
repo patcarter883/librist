@@ -300,6 +300,26 @@ Hardening / follow-ups to 0.2.15:
     len > sizeof(tmp) - UTUN_HEADER_SIZE, preventing unsigned
     wraparound when len is near SIZE_MAX.
 
+Community bug reports (gitlab #211, RossWang):
+
+  Receiver flow timing:
+  - Initialize last_packet_ts, time_offset_changed_ts, and
+    time_offset_old when a flow (re)starts.  After a flow reset the
+    stale values from the previous epoch could cause the old-clock
+    fallback to fire, corrupting packet timing and dropping the
+    first few packets.
+
+  OOB dequeue:
+  - rist_oob_dequeue now holds peerlist_lock while walking a
+    listener peer's child list.  A concurrent peer add/remove could
+    free a sibling_next pointer during the walk.
+
+  Note: _librist_peer_match_peer_addr (#211 item 3) also walks the
+  child list without a lock, but cannot use peerlist_lock because the
+  receive callback runs on the same thread that holds it in the
+  protocol loop.  Fixing this requires a per-listener child rwlock or
+  reference counting, planned for a future release.
+
 Test / CI:
   - New unit test (logging_init_order) that exercises the
     rist_logging_set remote-address path before any rist_*_create

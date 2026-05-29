@@ -32,9 +32,23 @@ test_sender_restart = executable('test_sender_restart',
 									stdatomic_dependency
                                 ])
 
+test_reflector = executable('test_reflector',
+                            'test_reflector.c',
+                            extra_sources,
+                            include_directories: inc,
+                            link_with: librist,
+                            dependencies: [
+                                threads,
+                                tools_dependencies,
+                                stdatomic_dependency
+                            ])
+
 
 ###Sender restart test (bug fix verification)
 test('Sender restart test', test_sender_restart, args: ['5'], suite: ['regression', 'sender'])
+
+###Reflector tests
+test('Reflector functionality', test_reflector, suite: ['main', 'reflector'])
 
 ###Simple profile tests
 #Unicast

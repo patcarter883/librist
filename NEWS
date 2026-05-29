@@ -91,6 +91,24 @@ Test:
     configured loss percentage, giving headroom for ARQ recovery in
     CI environments with timing jitter.
 
+New features:
+ - Add transparent one-to-many reflector mode (Main Profile only).
+   A receiver listener configured with ?reflector=1 transparently
+   forwards data packets from the publisher (sender) to all subscriber
+   (receiver) peers, and routes NACKs/RTCP from subscribers back to
+   the publisher.  Enables a single-listener fan-out topology without
+   requiring a full sender context on the reflector.
+   Trade-offs vs rist2rist (per-subscriber ARQ relay):
+     * No per-subscriber retry buffer — recovery relies on the
+       publisher's buffer, which may have aged out the packet.
+     * Retransmissions fan out to ALL subscribers, not just the one
+       that NACKed — bandwidth scales with subscriber count.
+     * Recovery RTT is roughly 2x a direct connection.
+     * No per-subscriber congestion control or statistics.
+   Best suited for low subscriber counts with clean last-mile links.
+   For high fan-out or lossy last-mile, use rist2rist instead.
+   (contributed by RossWang)
+
 RTCP/NACK:
  - Fix OOB read in NACK_FMT_SEQEXT handler: the RTCP feedback loop
    validated only 4 bytes per record, but the seqext struct reads
@@ -101,6 +119,10 @@ RTCP/NACK:
    range handler read the 4-byte name field at offset 8 with only an
    8-byte minimum guarantee, and logged it with %s (unbounded read to
    next NUL).  Add a sizeof guard and use %.4s.
+
+Log:
+ - Lower log level for harmless cross-role NACK/data packets from
+   ERROR/WARN to DEBUG to reduce log noise in reflector topologies.
 
 EAP/SRP:
  - Fix EAPOL-Start body length field: the packet declared a 4-byte body

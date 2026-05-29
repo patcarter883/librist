@@ -11,6 +11,13 @@
 #include <stdlib.h>
 #include <stdbool.h>
 
+static int constant_time_memcmp(const uint8_t *a, const uint8_t *b, size_t n) {
+	uint8_t diff = 0;
+	for (size_t i = 0; i < n; i++)
+		diff |= a[i] ^ b[i];
+	return diff != 0;
+}
+
 #ifndef WINAPI
 #define WINAPI
 #endif
@@ -67,7 +74,13 @@ int _librist_srp_mbedtls_wrap_random(void *unused, unsigned char * buf, size_t s
 #if MBEDTLS_HAS_MPI_RANDOM
 #define BIGNUM_RANDOM(num, max) ret = mbedtls_mpi_random(num, 0, max, _librist_srp_mbedtls_wrap_random, NULL);
 #else
-#define BIGNUM_RANDOM(num, max) ret = mbedtls_mpi_fill_random(num, 32, _librist_srp_mbedtls_wrap_random, NULL);
+#define BIGNUM_RANDOM(num, max) do { \
+	size_t _rlen = mbedtls_mpi_size(max); \
+	do { \
+		ret = mbedtls_mpi_fill_random(num, _rlen, _librist_srp_mbedtls_wrap_random, NULL); \
+		if (ret != 0) break; \
+	} while (mbedtls_mpi_cmp_mpi(num, max) >= 0 || mbedtls_mpi_bitlen(num) == 0); \
+} while (0)
 #endif
 #define BIGNUM_MOD_RED(out, a, b) ret = mbedtls_mpi_mod_mpi(out, a, b)
 #define BIGNUM_EXP_MOD(out, base, exp, mod) ret = mbedtls_mpi_exp_mod(out, base, exp, mod, NULL)
@@ -241,18 +254,26 @@ failed:
 	return -1;
 }
 
-static int librist_crypto_srp_hash_2_bignum(BIGNUM *A, BIGNUM *B, uint8_t hash_out[SHA256_DIGEST_LENGTH])
+/* RFC 5054 PAD variant: zero-extends both inputs to pad_len bytes before
+ * hashing.  Required for u = SHA(PAD(A) | PAD(B)) and k = SHA(N | PAD(g))
+ * where PAD(x) is x left-zero-padded to the byte length of N. */
+static int librist_crypto_srp_hash_2_bignum_padded(size_t pad_len, BIGNUM *A, BIGNUM *B, uint8_t hash_out[SHA256_DIGEST_LENGTH])
 {
-	size_t A_size = BIGNUM_GET_BINARY_SIZE(A);
-	size_t B_size = BIGNUM_GET_BINARY_SIZE(B);
 	uint8_t AB[2048];
 
-	if (A_size + B_size > sizeof(AB))
+	if (pad_len * 2 > sizeof(AB))
 		return -1;
-	BIGNUM_WRITE_BYTES(A, AB, A_size);
-	BIGNUM_WRITE_BYTES(B, &AB[A_size], B_size);
 
-	return librist_crypto_srp_hash(AB, A_size+B_size, hash_out);
+	size_t A_size = BIGNUM_GET_BINARY_SIZE(A);
+	size_t B_size = BIGNUM_GET_BINARY_SIZE(B);
+	if (A_size > pad_len || B_size > pad_len)
+		return -1;
+
+	memset(AB, 0, pad_len * 2);
+	BIGNUM_WRITE_BYTES(A, AB + (pad_len - A_size), A_size);
+	BIGNUM_WRITE_BYTES(B, AB + pad_len + (pad_len - B_size), B_size);
+
+	return librist_crypto_srp_hash(AB, pad_len * 2, hash_out);
 }
 
 static int librist_crypto_srp_hash_bignum(BIGNUM *in, uint8_t hash_out[SHA256_DIGEST_LENGTH])
@@ -411,6 +432,10 @@ struct librist_crypto_srp_authenticator_ctx *librist_crypto_srp_authenticator_ct
 	if (ret != 0)
 		goto fail;
 
+	/* RFC 5054: reject v == 0 (session key would not depend on verifier) */
+	if (BIGNUM_EQUALS(&ctx->v, 0))
+		goto fail;
+
 	BIGNUM_FROM_ARRAY(&ctx->s, s_bytes, s_len);
 	if (ret != 0)
 		goto fail;
@@ -521,9 +546,13 @@ int librist_crypto_srp_authenticator_handle_A(struct librist_crypto_srp_authenti
 #endif
 
 
-	//calc k
+	//calc k = SHA256(N | PAD(g))  (RFC 5054)
 	uint8_t k_hash[SHA256_DIGEST_LENGTH];
-	librist_crypto_srp_hash_2_bignum(&ctx->N, &ctx->g, k_hash);
+	size_t N_size = BIGNUM_GET_BINARY_SIZE(&ctx->N);
+	if (librist_crypto_srp_hash_2_bignum_padded(N_size, &ctx->N, &ctx->g, k_hash) != 0) {
+		ret = -1;
+		goto out;
+	}
 	BIGNUM_FROM_ARRAY(&ctx->k, k_hash, sizeof(k_hash));
 	if (ret != 0)
 		goto out;
@@ -547,6 +576,12 @@ int librist_crypto_srp_authenticator_handle_A(struct librist_crypto_srp_authenti
 	BIGNUM_MOD_RED(&ctx->B, &tmp, &ctx->N);
 	if (ret != 0)
 		goto b_out;
+
+	/* RFC 5054: authenticator aborts if B mod N == 0 */
+	if (BIGNUM_EQUALS(&ctx->B, 0)) {
+		ret = -1;
+		goto b_out;
+	}
 
 #if DEBUG_EXTRACT_SRP_EXCHANGE
 	fprintf(stderr, "%s\n", __func__);
@@ -574,7 +609,8 @@ out:
 //M2 = SHA256(A, M1, K)
 int librist_crypto_srp_authenticator_verify_m1(struct librist_crypto_srp_authenticator_ctx *ctx, const char *username,  uint8_t *client_m1_buf) {
 	uint8_t u_hash[SHA256_DIGEST_LENGTH];
-	if (librist_crypto_srp_hash_2_bignum(&ctx->A, &ctx->B, u_hash) != 0) {
+	size_t pad = BIGNUM_GET_BINARY_SIZE(&ctx->N);
+	if (librist_crypto_srp_hash_2_bignum_padded(pad, &ctx->A, &ctx->B, u_hash) != 0) {
 		return -1;
 	}
 
@@ -590,6 +626,19 @@ int librist_crypto_srp_authenticator_verify_m1(struct librist_crypto_srp_authent
 	if (ret != 0)
 		goto out;
 
+	/* RFC 5054: authenticator aborts if u == 0 */
+	{
+		BIGNUM u_mod;
+		BIGNUM_INIT(&u_mod);
+		BIGNUM_MOD_RED(&u_mod, &u, &ctx->N);
+		bool u_zero = BIGNUM_EQUALS(&u_mod, 0);
+		BIGNUM_FREE(&u_mod);
+		if (ret != 0 || u_zero) {
+			ret = -1;
+			goto out;
+		}
+	}
+
 	BIGNUM_EXP_MOD(&tmp1, &ctx->v, &u, &ctx->N);
 	if (ret != 0)
 		goto out;
@@ -600,8 +649,13 @@ int librist_crypto_srp_authenticator_verify_m1(struct librist_crypto_srp_authent
 
 	//tmp1 -> S
 	BIGNUM_EXP_MOD(&tmp1, &tmp2, &ctx->b, &ctx->N);
+	if (ret != 0)
+		goto out;
 
-    librist_crypto_srp_hash_bignum(&tmp1, ctx->key);
+	if (librist_crypto_srp_hash_bignum(&tmp1, ctx->key) != 0) {
+		ret = -1;
+		goto out;
+	}
 
 #if DEBUG_EXTRACT_SRP_EXCHANGE
     fprintf(stderr, "%s\n", __func__);
@@ -619,7 +673,7 @@ int librist_crypto_srp_authenticator_verify_m1(struct librist_crypto_srp_authent
 	print_hash(m1_buf, "M1: ");
 #endif
 
-	ret = memcmp(m1_buf, client_m1_buf, sizeof(m1_buf));
+	ret = constant_time_memcmp(m1_buf, client_m1_buf, sizeof(m1_buf));
 	if (ret != 0)
 		goto out;
 
@@ -713,10 +767,11 @@ int librist_crypto_srp_client_handle_B(struct librist_crypto_srp_client_ctx *ctx
 		goto out;
 	}
 
-	//Calculate u & execute safety check
+	//Calculate u = SHA256(PAD(A) | PAD(B))  (RFC 5054)
 	{
 		uint8_t u_hash[SHA256_DIGEST_LENGTH];
-		ret =librist_crypto_srp_hash_2_bignum(&ctx->A, &ctx->B, u_hash);
+		size_t u_pad = BIGNUM_GET_BINARY_SIZE(&ctx->N);
+		ret = librist_crypto_srp_hash_2_bignum_padded(u_pad, &ctx->A, &ctx->B, u_hash);
 		if (ret != 0)
 			goto out;
 
@@ -733,10 +788,11 @@ int librist_crypto_srp_client_handle_B(struct librist_crypto_srp_client_ctx *ctx
 		}
 	}
 
-	//Calculate k
+	//Calculate k = SHA256(N | PAD(g))  (RFC 5054)
 	{
 		uint8_t k_hash[SHA256_DIGEST_LENGTH];
-		ret = librist_crypto_srp_hash_2_bignum(&ctx->N, &ctx->g, k_hash);
+		size_t k_pad = BIGNUM_GET_BINARY_SIZE(&ctx->N);
+		ret = librist_crypto_srp_hash_2_bignum_padded(k_pad, &ctx->N, &ctx->g, k_hash);
 		if (ret != 0)
 			goto out;
 
@@ -811,7 +867,7 @@ int librist_crypto_srp_client_verify_m2(struct librist_crypto_srp_client_ctx *ct
 	if (ret != 0)
 		return ret;
 
-	return memcmp(m2, calc_m2, sizeof(calc_m2));
+	return constant_time_memcmp(m2, calc_m2, sizeof(calc_m2));
 }
 
 const uint8_t *librist_crypto_srp_client_get_key(struct librist_crypto_srp_client_ctx *ctx) {
@@ -819,8 +875,12 @@ const uint8_t *librist_crypto_srp_client_get_key(struct librist_crypto_srp_clien
 }
 
 struct librist_crypto_srp_client_ctx *librist_crypto_srp_client_ctx_create(bool default_ng, uint8_t *N_bytes, size_t N_len, uint8_t *g_bytes, size_t g_len, uint8_t *s_bytes, size_t s_len, bool correct) {
-	if (!s_bytes || s_len == 0 || (!default_ng && (!N_bytes || N_len == 0 || !g_bytes || g_len == 0)))
+	if (!s_bytes || s_len == 0 || s_len > 64)
 		return NULL;
+	if (!default_ng) {
+		if (!N_bytes || N_len < 128 || N_len > 1024 || !g_bytes || g_len == 0 || g_len > N_len)
+			return NULL;
+	}
 
 	struct librist_crypto_srp_client_ctx *ctx = calloc(1, sizeof(*ctx));
 	if (!ctx)
@@ -938,17 +998,24 @@ int librist_crypto_srp_create_verifier(
 	if (ret != 0)
 		goto failed;
 
-	//Fill the salt
+	/* Generate salt as raw bytes so leading zeros are preserved.
+	 * Bignum export strips them, shrinking the effective salt domain. */
+	uint8_t salt_raw[32];
 #if DEBUG_USE_EXAMPLE_CONSTANTS
 	const char salt_hex[] = "72F9D5383B7EB7599FB63028F47475B60A55F313D40E0BE023E026C97C0A2C32";
 	BIGNUM_FROM_STRING(&s, salt_hex);
+	if (ret != 0)
+		goto failed;
+	memset(salt_raw, 0, sizeof(salt_raw));
+	{
+		size_t ss = BIGNUM_GET_BINARY_SIZE(&s);
+		if (ss <= sizeof(salt_raw))
+			BIGNUM_WRITE_BYTES(&s, salt_raw + (sizeof(salt_raw) - ss), ss);
+	}
 #else
-#if HAVE_MBEDTLS
-	ret = mbedtls_mpi_fill_random(&s, 32, _librist_srp_mbedtls_wrap_random, NULL);
-#elif HAVE_NETTLE
-	ret = 0;
-	nettle_mpz_random_size(&s, &ret, _librist_srp_nettle_wrap_random, 8 * 32);
-#endif
+	if (_librist_crypto_ramdom_get_bytes(salt_raw, sizeof(salt_raw)) != 0)
+		goto failed;
+	BIGNUM_FROM_ARRAY(&s, salt_raw, sizeof(salt_raw));
 	if (ret != 0)
 		goto failed;
 #endif
@@ -961,7 +1028,11 @@ int librist_crypto_srp_create_verifier(
 	if (ret != 0)
 		goto failed;
 
-	BIGNUM_WRITE_BYTES_ALLOC(&s, bytes_s, len_s, failed);
+	*len_s = sizeof(salt_raw);
+	*bytes_s = malloc(sizeof(salt_raw));
+	if (!*bytes_s) goto failed;
+	memcpy(*bytes_s, salt_raw, sizeof(salt_raw));
+
 	BIGNUM_WRITE_BYTES_ALLOC(&v, bytes_v, len_v, failed);
 
 #if DEBUG_EXTRACT_SRP_EXCHANGE

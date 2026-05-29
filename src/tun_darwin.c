@@ -129,7 +129,7 @@ int rist_tun_read(int fd, uint8_t *buf, size_t len)
 int rist_tun_write(int fd, const uint8_t *buf, size_t len)
 {
 	uint8_t tmp[TUN_DARWIN_BUFSIZE];
-	if (len + UTUN_HEADER_SIZE > sizeof(tmp))
+	if (len > sizeof(tmp) - UTUN_HEADER_SIZE)
 		return -1;
 
 	uint32_t af;

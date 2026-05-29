@@ -594,6 +594,10 @@ static int receiver_enqueue(struct rist_peer *peer, uint64_t source_time, uint64
 				seq, idx_initial, source_time, peer->flow->time_offset / RIST_CLOCK, idx_initial);
 		uint64_t packet_time = source_time + f->time_offset;
 
+		f->last_packet_ts = packet_time;
+		f->time_offset_changed_ts = 0;
+		f->time_offset_old = f->time_offset;
+
 		receiver_insert_queue_packet(f, peer, idx_initial, buf, len, seq, source_time, src_port, dst_port, packet_time);
 		atomic_store_explicit(&f->receiver_queue_output_idx, idx_initial, memory_order_release);
 
@@ -1352,7 +1356,9 @@ struct rist_peer *_librist_peer_create_common(struct rist_common_ctx *cctx, stru
 	}
 
 	strncpy(&p->miface[0], config->miface, RIST_MAX_STRING_SHORT);
+	p->miface[RIST_MAX_STRING_SHORT - 1] = '\0';
 	strncpy(&p->cname[0], config->cname, RIST_MAX_STRING_SHORT);
+	p->cname[RIST_MAX_STRING_SHORT - 1] = '\0';
 	if (config->address_family && rist_set_manual_sockdata(p, config)) {
 		free(p);
 		return NULL;
@@ -2388,7 +2394,9 @@ static void peer_copy_settings(struct rist_peer *peer_src, struct rist_peer *pee
 	_librist_crypto_psk_rist_key_clone(&peer_src->key_tx, &peer->key_tx_odd);
 	peer->key_tx_odd_active = peer_src->key_tx_odd_active;
 	strncpy(&peer->cname[0], &peer_src->cname[0], RIST_MAX_STRING_SHORT);
+	peer->cname[RIST_MAX_STRING_SHORT - 1] = '\0';
 	strncpy(&peer->miface[0], &peer_src->miface[0], RIST_MAX_STRING_SHORT);
+	peer->miface[RIST_MAX_STRING_SHORT - 1] = '\0';
 	peer->config.weight = peer_src->config.weight;
 	peer->config.virt_dst_port = peer_src->config.virt_dst_port;
 	peer->config.recovery_mode = peer_src->config.recovery_mode;
@@ -2430,27 +2438,27 @@ static void rist_peer_recv_wrap(struct evsocket_ctx *evctx, int fd, short revent
 }
 
 static void rist_new_connection(struct rist_peer *peer, struct rist_peer *p, uint32_t flow_id) {
-	char peer_type[5];
-	char id_name[8];
+	const char *peer_type = "?";
+	const char *id_name = "?";
 	if (peer->is_rtcp) {
-		strcpy(peer_type, "RTCP");
-		strcpy(id_name, "flow_id");
+		peer_type = "RTCP";
+		id_name = "flow_id";
 	} else if (peer->is_data) {
-		strcpy(peer_type, "RTP");
-		strcpy(id_name, "ssrc");
+		peer_type = "RTP";
+		id_name = "ssrc";
 	}
 	if (peer->receiver_mode) {
 		rist_log_priv(get_cctx(peer), RIST_LOG_INFO, "New %s peer connecting, %s %"PRIu32", peer_id %"PRIu32", ports %u <- %u\n",
-		&peer_type, &id_name, flow_id, p->adv_peer_id, p->local_port, p->remote_port);
+		peer_type, id_name, flow_id, p->adv_peer_id, p->local_port, p->remote_port);
 		p->adv_flow_id = flow_id;
 	}
 	else {
 		if (flow_id) {
 			rist_log_priv(get_cctx(peer), RIST_LOG_INFO, "New reverse %s peer connecting with old flow_id %"PRIu32", peer_id %"PRIu32", ports %u <- %u\n",
-			&peer_type, flow_id, p->adv_peer_id, p->local_port, p->remote_port);
+			peer_type, flow_id, p->adv_peer_id, p->local_port, p->remote_port);
 		} else {
 			rist_log_priv(get_cctx(peer), RIST_LOG_INFO, "New reverse %s peer connecting, peer_id %"PRIu32", ports %u <- %u\n",
-			&peer_type, p->adv_peer_id, p->local_port, p->remote_port);
+			peer_type, p->adv_peer_id, p->local_port, p->remote_port);
 		}
 		p->peer_ssrc = p->adv_flow_id = p->sender_ctx->adv_flow_id;
 	}
@@ -3160,7 +3168,11 @@ static void rist_oob_dequeue(struct rist_common_ctx *ctx, int maxcount)
 		uint8_t *payload = oob_buffer->data;
 		struct rist_peer *p = oob_buffer->peer;
 		if (p->listening) {
-			/* Listener peer: send OOB to all alive child peers */
+			/* Listener peer: send OOB to all alive child peers.
+			 * Hold peerlist_lock while walking the child list to
+			 * prevent a concurrent peer add/remove from freeing a
+			 * sibling_next pointer underneath us. */
+			pthread_mutex_lock(&ctx->peerlist_lock);
 			struct rist_peer *child = p->child;
 			bool sent = false;
 			while (child) {
@@ -3171,6 +3183,7 @@ static void rist_oob_dequeue(struct rist_common_ctx *ctx, int maxcount)
 				}
 				child = child->sibling_next;
 			}
+			pthread_mutex_unlock(&ctx->peerlist_lock);
 			if (!sent)
 				rist_log_priv(ctx, RIST_LOG_WARN, "OOB: listener peer has no alive children, dropping\n");
 		} else {
@@ -3285,8 +3298,8 @@ static void sender_send_data(struct rist_sender *ctx, int maxcount)
 				uint64_t delay = (timestampNTP_u64() - ctx->sender_queue[delete_idx]->time) / RIST_CLOCK;
 				ctx->sender_queue_timelength = delay;
 				if (delay < ctx->sender_recover_min_time) {
-					// Grow the buffer size by one (packet is too young to delete)
-					ctx->sender_buffer_size++;
+					if (ctx->sender_buffer_size < ctx->sender_queue_max - 1)
+						ctx->sender_buffer_size++;
 					reduce = 0;
 					break;
 				}
@@ -3736,9 +3749,9 @@ void remove_peer_from_flow(struct rist_peer *peer)
 int rist_peer_remove(struct rist_common_ctx *ctx, struct rist_peer *peer, struct rist_peer **next)
 {
 	if (peer == NULL) {
-		return -1;
 		if (next)
 			*next = NULL;
+		return -1;
 	}
 	atomic_store_explicit(&peer->shutdown, true, memory_order_release);
 	if (peer->send_first_connection_event  && !peer->timed_out && ctx->connection_status_callback && (ctx->profile != RIST_PROFILE_SIMPLE || peer->is_rtcp))

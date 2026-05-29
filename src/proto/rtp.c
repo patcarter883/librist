@@ -67,10 +67,7 @@ void rist_rtcp_write_sr(uint8_t *buf, int *offset,
 void rist_rtcp_write_sdes(uint8_t *buf, int *offset,
                                         const char *name,
                                         const uint32_t flow_id) {
-  size_t namelen = strlen(name);
-  /* sdes->name_len is uint8_t; if a caller hands us a longer cname,
-   * clamp before computing the wire size so the length byte and the
-   * actual bytes we copy stay in agreement. */
+  size_t namelen = strnlen(name, RIST_MAX_STRING_SHORT - 1);
   if (namelen > 255)
     namelen = 255;
   size_t sdes_size = ((10 + namelen + 1) + 3) & ~3;
@@ -78,16 +75,14 @@ void rist_rtcp_write_sdes(uint8_t *buf, int *offset,
   struct rist_rtcp_sdes_pkt *sdes =
       (struct rist_rtcp_sdes_pkt *)(buf + RIST_MAX_PAYLOAD_OFFSET + *offset);
   *offset += sdes_size;
-  /* Populate SDES for sender description */
   sdes->rtcp.flags = RTCP_SDES_FLAGS;
   sdes->rtcp.ptype = PTYPE_SDES;
   sdes->rtcp.len = htons((uint16_t)((sdes_size - 1) >> 2));
   sdes->rtcp.ssrc = htobe32(flow_id);
   sdes->cname = 1;
   sdes->name_len = (uint8_t)namelen;
-  // We copy the extra padding bytes from the source because it is a
-  // preallocated buffer of size 128 with all zeroes
-  memcpy(sdes->udn, name, namelen + padding);
+  memcpy(sdes->udn, name, namelen);
+  memset(sdes->udn + namelen, 0, padding);
 }
 
 void rist_rtcp_write_echoreq(uint8_t *buf, int *offset,

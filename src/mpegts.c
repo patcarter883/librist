@@ -24,18 +24,16 @@ int suppress_null_packets(const uint8_t payload_in[],uint8_t payload_out[], size
 	SET_BIT(header_ext->flags, 7);
 	size_t offset = 0;
 	int suppressed = 0;
-	struct mpegts_header *hdr = (struct mpegts_header *)&payload_in[offset];
-	if (RIST_UNLIKELY(hdr->syncbyte != 0x47))
-		goto fail;
-
 	for (int i = 0; i <= (int)count-1; i++) {
+		struct mpegts_header *hdr = (struct mpegts_header *)&payload_in[offset];
+		if (RIST_UNLIKELY(hdr->syncbyte != 0x47))
+			goto fail;
 		if (be16toh(hdr->flags1) == 0x1FFF) {
 			*payload_len -= packet_size;
 			SET_BIT(header_ext->npd_bits, (6 - i));
 			suppressed++;
 		}
 		offset += packet_size;
-		hdr = (struct mpegts_header *)&payload_in[offset];
 	}
 
 	if (suppressed == 0)
@@ -72,12 +70,15 @@ int expand_null_packets(uint8_t payload_in[], uint8_t payload_out[], size_t *pay
 	if ((ts_count + null_count) > 7)
 		return 0;
 
+	size_t orig_payload_len = *payload_len;
 	size_t offset = 0;
 	ts_count += null_count;
 	*payload_len = ts_count * packet_size;
 	size_t input_offset = 0;
 	for (int i = 0; i <= (int)ts_count-1; i++) {
 		if (CHECK_BIT(npd_bits, (6 - i)) == 0) {
+			if (input_offset + packet_size > orig_payload_len)
+				return -1;
 			memcpy(&payload_out[offset], &payload_in[input_offset], packet_size);
 			input_offset += packet_size;
 		}

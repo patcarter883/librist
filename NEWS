@@ -5,6 +5,28 @@ A library implementing the Video Services Forum (VSF) Technical
 Recommendations TR-06-1 (Simple Profile) and TR-06-2 (Main Profile).
 
 
+Changes for next release:
+-------------------------
+
+RTCP/NACK:
+ - Fix OOB read in NACK_FMT_SEQEXT handler: the RTCP feedback loop
+   validated only 4 bytes per record, but the seqext struct reads
+   seq_msb at offset 12.  A crafted datagram with a short trailing
+   record could read up to 12 bytes past the allocation.  Add a
+   per-handler minimum-length check matching the adjacent ECHO branches.
+ - Fix OOB read and log-disclosure in rist_sender_recv_nack: the NACK
+   range handler read the 4-byte name field at offset 8 with only an
+   8-byte minimum guarantee, and logged it with %s (unbounded read to
+   next NUL).  Add a sizeof guard and use %.4s.
+
+EAP/SRP:
+ - Fix off-by-one in eap_srp_send_password bounds check: the limit did
+   not account for the 1-byte flags field before the ciphertext, so a
+   maximum-length password would write 1 byte past the stack buffer.
+   Not network-reachable (all callers cap at 128 bytes), but worth
+   hardening.
+
+
 Changes for 0.2.16 (pre-release):
 ---------------------------------
 

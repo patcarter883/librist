@@ -12,8 +12,8 @@ ABI/API:
   - ABI version 10:4:6 (soversion 4, binary-compatible with 0.2.15)
   - API version 4.7.0 (unchanged)
 
-  Maintenance release for 0.2.15. No source or binary changes are
-  required of downstream consumers.
+  Maintenance and security-hardening release for 0.2.15. No source or
+  binary changes are required of downstream consumers.
 
 Bug Fixes:
 
@@ -193,6 +193,112 @@ Hardening / follow-ups to 0.2.15:
     BCryptGenRandom, skipping the entropy module entirely on
     Windows. Non-Windows builds still use the normal entropy
     initialisation path.
+
+  Second audit follow-ups (reported by Thomas Guillem):
+
+  EAP-SRP authentication:
+  - EAP passphrase response handler now gates on a matching
+    outstanding request identifier when a solicited passphrase
+    exchange is active.  Previously any post-auth spoofed
+    RESPONSE/PASSWORD_REQUEST_RESPONSE was accepted, allowing a
+    man-on-the-side to hijack a key-rotation exchange.  Unsolicited
+    passphrase pushes (rist_eap_send_passphrase) remain allowed as
+    the payload is encrypted under the SRP session key.
+  - EAP last_identifier is no longer primed in the request prologue
+    before subtype validation.  A spoofed REQUEST with a crafted
+    identifier could prime the FAILURE-identifier gate, allowing a
+    subsequent spoofed FAILURE to latch the peer out.
+  - EAP authenticator initial identifier now comes from the CSPRNG
+    instead of prand_u32, closing an off-path prediction window.
+  - The use_default_2048 flag in EAP SRP challenge processing was
+    hardcoded true, ignoring wire-supplied N/g groups.  Now derived
+    from the actual generator length on the wire.
+  - eap_set_ip_string replaced an unbounded memcpy with strncpy and
+    explicit NUL-termination.
+
+  EAP-SRP / cryptographic primitives:
+  - SRP u and k hash computations now use RFC 5054 PAD: both inputs
+    are zero-extended to the byte length of N before hashing.  The
+    previous unpadded hash produced different values for leading-
+    zero-byte operands, deviating from the specification.  This is a
+    wire-incompatible change with pre-0.2.16 peers using SRP.
+  - SRP M1/M2 verification and client M2 verification now use a
+    constant-time comparison instead of memcmp.
+  - SRP authenticator aborts if the verifier v is zero (session key
+    would not depend on the password).
+  - SRP authenticator aborts if B mod N == 0 (RFC 5054).
+  - SRP authenticator aborts if u == 0 mod N after hashing A||B.
+  - SRP hash return values are now checked; unchecked failures
+    previously left uninitialised buffers in the session transcript.
+  - SRP BIGNUM_EXP_MOD return after computing S is now checked.
+  - SRP client context creation now validates modulus length
+    [128, 1024], generator length [1, N_len], and salt length
+    [1, 64] to cap resource consumption from malformed handshakes.
+  - SRP private exponent size now matches the modulus size instead
+    of a hardcoded 32 bytes, providing full-strength keying for
+    large groups (e.g. NG_8192).
+  - SRP salt generation now uses fixed-size 32-byte raw CSPRNG
+    output copied directly, instead of going through bignum export
+    which strips leading zero bytes and shrinks the effective salt
+    domain.
+
+  Receive path / flow safety:
+  - Use-after-free on flow deletion during rist_receiver_data_read2
+    is fixed.  The flow pointer returned by the lookup function is
+    now validated under flows_lock; the flow's own mutex is acquired
+    before flows_lock is released.  rist_delete_flow unlinks the
+    flow under the same lock before freeing.
+  - rist_receiver_set_output_fifo_size now rejects size == 0 and
+    size > 65536, preventing a zero-modulus OOB on the FIFO ring.
+  - rist_peer_get_cname uses strnlen instead of strlen, bounded by
+    RIST_MAX_STRING_SHORT.
+
+  MPEG-TS null packet handling:
+  - expand_null_packets now bounds-checks each source-packet copy
+    against the original payload length, preventing an information
+    leak of adjacent buffer data when the NPD bit pattern implies
+    more real packets than the payload actually contains.
+  - suppress_null_packets now checks the sync byte of every packet
+    in the block, not just the first.
+
+  SDES / cname / miface:
+  - RTCP SDES writer uses strnlen instead of strlen and zero-fills
+    the padding region explicitly, instead of copying adjacent
+    memory from the source buffer.
+  - All strncpy sites for peer cname and miface (peer_initialize,
+    rist_peer_clone) now have explicit NUL-termination.
+
+  PSK encryption:
+  - PSK key init now uses strnlen and explicit NUL-termination
+    instead of unbounded strlen + memcpy.
+  - PSK key clone now explicitly NUL-terminates the copied password.
+  - PSK decrypt no longer unconditionally clears bad_decryption
+    after rekeying; if _librist_crypto_aes_key set the flag (PBKDF2
+    failure), it stays set so the lockout counter is not reset.
+
+  Sender:
+  - sender_buffer_size growth is now capped at sender_queue_max - 1,
+    preventing unbounded memory growth when packets are too young to
+    delete from the retry queue.
+  - rist_sender_peer_create now calls rist_peer_remove instead of
+    bare free on RTCP-peer creation failure, preventing a dangling
+    pointer in the peer list.
+
+  Miscellaneous:
+  - rist_peer_remove dead store fixed: *next = NULL now executes
+    before the early return on NULL peer.
+  - NACK debug log guarded against zero-length array dereference
+    and uses %zu for size_t.
+  - is_ip_address uses a union of in_addr/in6_addr for the
+    inet_pton destination buffer, fixing an AF_INET6 stack overflow
+    that wrote 16 bytes into a 4-byte sockaddr_in.sin_addr.
+  - rist_new_connection log format strings replaced char[] locals
+    passed via &array with const char * pointers, eliminating
+    strict-aliasing undefined behaviour in the varargs call.
+  - rist_tun_write overflow guard changed from
+    len + UTUN_HEADER_SIZE > sizeof(tmp) to
+    len > sizeof(tmp) - UTUN_HEADER_SIZE, preventing unsigned
+    wraparound when len is near SIZE_MAX.
 
 Test / CI:
   - New unit test (logging_init_order) that exercises the

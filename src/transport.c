@@ -8,11 +8,15 @@
 #include "libevsocket.h"
 #include "librist/transport.h"
 
-#ifndef _WIN32
+#ifdef _WIN32
+#if !defined(_WIN32_WINNT) || _WIN32_WINNT < 0x0600
+# undef _WIN32_WINNT
+# define _WIN32_WINNT 0x0600
+#endif
+#include <winsock2.h>
+#else
 #include <sys/socket.h>
 #include <poll.h>
-#else
-#include <winsock2.h>
 #endif
 
 #include <string.h>
@@ -95,7 +99,11 @@ int rist_transport_poll(struct rist_common_ctx *ctx,
 		                           fds, nfds, timeout_ms);
 	}
 
+#ifdef _WIN32
+	return WSAPoll(fds, nfds, timeout_ms);
+#else
 	return poll(fds, nfds, timeout_ms);
+#endif
 }
 
 #ifndef _WIN32

@@ -12,6 +12,7 @@
 #include <limits.h>
 #include "log-private.h"
 #include "crypto/psk.h"
+#include <lz4.h>
 #include "crypto/random.h"
 #include "udp-private.h"
 #include "transport-private.h"
@@ -2709,6 +2710,28 @@ static void rist_peer_recv(struct evsocket_ctx *evctx, int fd, short revents, vo
 							if (now > (peer->log_repeat_timer + RIST_LOG_QUIESCE_TIMER)) {
 								rist_log_priv(get_cctx(peer), RIST_LOG_ERROR,
 									"Advanced Profile: expect encrypted data but received clear\n");
+								peer->log_repeat_timer = now;
+							}
+							return;
+						}
+
+						uint8_t adv_lz4_buf[RIST_MAX_PACKET_SIZE];
+						if (adv_parsed.lpc_mode == RIST_ADV_LPC_LZ4 && adv_data_len > 0) {
+							int dlen = LZ4_decompress_safe(
+								(const char *)adv_data, (char *)adv_lz4_buf,
+								(int)adv_data_len, RIST_MAX_PACKET_SIZE);
+							if (dlen <= 0) {
+								rist_log_priv(get_cctx(peer), RIST_LOG_ERROR,
+									"Advanced Profile: LZ4 decompress failed\n");
+								return;
+							}
+							adv_data = adv_lz4_buf;
+							adv_data_len = (size_t)dlen;
+						} else if (adv_parsed.lpc_mode != RIST_ADV_LPC_NONE) {
+							if (now > (peer->log_repeat_timer + RIST_LOG_QUIESCE_TIMER)) {
+								rist_log_priv(get_cctx(peer), RIST_LOG_WARN,
+									"Advanced Profile: unsupported LPC mode %u\n",
+									adv_parsed.lpc_mode);
 								peer->log_repeat_timer = now;
 							}
 							return;

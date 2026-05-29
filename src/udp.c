@@ -21,6 +21,7 @@
 #endif
 #include "crypto/psk.h"
 #include "mpegts.h"
+#include <lz4.h>
 #include "transport-private.h"
 #include <stdlib.h>
 #include <stddef.h>
@@ -108,9 +109,24 @@ size_t rist_send_seq_rtcp(struct rist_peer *p, uint32_t seq_rtp, uint8_t payload
 			params.flow_id = &fid;
 		}
 
-		uint8_t *enc_payload = payload;
+		uint8_t *wire_payload = payload;
+		size_t wire_payload_len = payload_len;
+		uint8_t lz4_buf[RIST_MAX_PACKET_SIZE];
 		uint8_t enc_buf[RIST_MAX_PACKET_SIZE];
 		uint8_t psk_iv_bytes[RIST_ADV_PSK_IV_SIZE];
+
+		if (p->compression && payload_len > 0) {
+			int bound = LZ4_compressBound((int)payload_len);
+			if (bound > 0 && (size_t)bound <= sizeof(lz4_buf)) {
+				int clen = LZ4_compress_default((const char *)payload,
+					(char *)lz4_buf, (int)payload_len, (int)sizeof(lz4_buf));
+				if (clen > 0 && (size_t)clen < payload_len) {
+					wire_payload = lz4_buf;
+					wire_payload_len = (size_t)clen;
+					params.lpc_mode = RIST_ADV_LPC_LZ4;
+				}
+			}
+		}
 
 		if (p->key_tx.key_size > 0) {
 			uint32_t seq_nbe = htobe32(seq_rtp);
@@ -118,7 +134,7 @@ size_t rist_send_seq_rtcp(struct rist_peer *p, uint32_t seq_rtp, uint8_t payload
 			uint8_t old_nonce[4];
 			memcpy(old_nonce, p->key_tx.gre_nonce, 4);
 			_librist_crypto_psk_encrypt(&p->key_tx, seq_nbe, 1,
-			                            payload, enc_buf, payload_len);
+			                            wire_payload, enc_buf, wire_payload_len);
 			if (p->key_tx.csprng_failed) {
 				rist_log_priv(ctx, RIST_LOG_ERROR,
 					"Advanced Profile: PSK encrypt failed (CSPRNG)\n");
@@ -127,13 +143,13 @@ size_t rist_send_seq_rtcp(struct rist_peer *p, uint32_t seq_rtp, uint8_t payload
 			if (memcmp(old_nonce, p->key_tx.gre_nonce, 4) != 0)
 				rist_adv_send_psk_nonce(p, p->key_tx.gre_nonce,
 				                        (uint16_t)p->key_tx.key_size);
-			enc_payload = enc_buf;
+			wire_payload = enc_buf;
 			params.psk_nonce = p->key_tx.gre_nonce;
 			memcpy(psk_iv_bytes, &seq_nbe, sizeof(seq_nbe));
 			params.psk_iv = psk_iv_bytes;
 		}
 
-		int total = rist_adv_build(adv_buf, &params, enc_payload, payload_len);
+		int total = rist_adv_build(adv_buf, &params, wire_payload, wire_payload_len);
 		if (total < 0) {
 			rist_log_priv(ctx, RIST_LOG_ERROR, "Advanced Profile: failed to build packet\n");
 			return 0;
@@ -1127,7 +1143,7 @@ ssize_t rist_retry_dequeue(struct rist_sender *ctx)
 	// update bandwidth value
 	rist_calculate_bitrate(ret, retry_bw);
 
-	if ((ret == (size_t)-1) || (ret < buffer->size)) {
+	if ((ret == (size_t)-1) || (!retry->peer->peer_data->compression && ret < buffer->size)) {
 		rist_log_priv(&ctx->common, RIST_LOG_ERROR,
 			"Resending of packet failed %zu != %zu for seq %"PRIu32"\n", ret, buffer->size, retry->seq);
 		retry->peer->stats_sender_instant.retrans_skip++;

@@ -57,7 +57,14 @@ static void print_hash(const uint8_t *buf, char *specifier) {
 #endif
 
 #if MBEDTLS_VERSION_NUMBER >= 0x03000000
-#include <mbedtls/compat-2.x.h>
+/* mbedTLS 3.x dropped the _ret suffix; provide our own compat macros
+ * instead of pulling in the deprecated compat-2.x.h header (which
+ * triggers -Werror on distro builds with MBEDTLS_DEPRECATED_WARNING
+ * and is removed entirely in mbedTLS 4.x). */
+#define mbedtls_sha256_starts_ret mbedtls_sha256_starts
+#define mbedtls_sha256_update_ret mbedtls_sha256_update
+#define mbedtls_sha256_finish_ret mbedtls_sha256_finish
+#define mbedtls_sha256_ret        mbedtls_sha256
 #endif
 
 int _librist_srp_mbedtls_wrap_random(void *unused, unsigned char * buf, size_t size) {

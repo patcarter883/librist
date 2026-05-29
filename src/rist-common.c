@@ -1633,9 +1633,11 @@ static void rist_sender_recv_nack(struct rist_peer *peer,
 	}
 
 	if (rtcp->ptype == PTYPE_NACK_CUSTOM) {
+		if (payload_len < sizeof(struct rist_rtcp_nack_range))
+			return;
 		struct rist_rtcp_nack_range *rtcp_nack = (struct rist_rtcp_nack_range *) payload;
 		if (memcmp(rtcp_nack->name, "RIST", 4) != 0) {
-			rist_log_priv(get_cctx(peer), RIST_LOG_ERROR, "Non-Rist nack packet (%s).\n", rtcp_nack->name);
+			rist_log_priv(get_cctx(peer), RIST_LOG_ERROR, "Non-Rist nack packet (%.4s).\n", rtcp_nack->name);
 			return; /* Ignore app-type not RIST */
 		}
 		uint16_t raw_len = ntohs(rtcp->len);
@@ -2231,6 +2233,8 @@ static void rist_recv_rtcp(struct rist_peer *peer, uint32_t seq,
 			case PTYPE_NACK_CUSTOM:
 				if (subtype == NACK_FMT_SEQEXT)
 				{
+					if (bytes < sizeof(struct rist_rtcp_seqext))
+						break;
 					struct rist_rtcp_seqext *seq_ext = (struct rist_rtcp_seqext *) pkt;
 					nack_seq_msb = ((uint32_t)be16toh(seq_ext->seq_msb)) << 16;
 					break;

@@ -15,6 +15,7 @@
 #include "log-private.h"
 #include "proto/rist_time.h"
 #include "crypto/psk.h"
+#include "cjson/cJSON.h"
 #include <string.h>
 #include <errno.h>
 
@@ -502,6 +503,76 @@ int rist_adv_send_psk_nonce(struct rist_peer *peer,
 }
 
 /* --------------------------------------------------------------------------
+ * Flow Attribute (CI=0x8001, Section 5.3.7)
+ *
+ * Body: JSON object describing session and flow metadata.
+ * Sent periodically by the sender (~1 Hz).
+ *
+ * Minimal JSON schema:
+ *   { "session": "<cname>",
+ *     "flow_id": <outer>, "flow_inner": <inner>,
+ *     "virt_dst_port": <port>, "profile": "advanced" }
+ * -------------------------------------------------------------------------- */
+
+int rist_adv_send_flow_attr(struct rist_peer *peer)
+{
+	struct rist_common_ctx *ctx = get_cctx(peer);
+	uint8_t pkt[RIST_MAX_PACKET_SIZE];
+
+	cJSON *root = cJSON_CreateObject();
+	if (!root)
+		return -1;
+
+	cJSON_AddStringToObject(root, "session", peer->cname);
+	cJSON_AddNumberToObject(root, "virt_dst_port", peer->config.virt_dst_port);
+	cJSON_AddStringToObject(root, "profile", "advanced");
+
+	uint16_t outer = peer->config.virt_dst_port;
+	uint16_t inner = 0;
+	cJSON_AddNumberToObject(root, "flow_id", outer);
+	cJSON_AddNumberToObject(root, "flow_inner", inner);
+
+	char *json = cJSON_PrintUnformatted(root);
+	cJSON_Delete(root);
+	if (!json)
+		return -1;
+
+	size_t json_len = strlen(json);
+	if (json_len > RIST_MAX_PACKET_SIZE - RIST_ADV_MAX_FIXED_HEADER - 4) {
+		free(json);
+		return -1;
+	}
+
+	uint8_t ctrl[4 + RIST_MAX_PACKET_SIZE];
+	size_t off = 0;
+
+	ctrl[off++] = (RIST_ADV_CI_FLOW_ATTR >> 8) & 0xFF;
+	ctrl[off++] = RIST_ADV_CI_FLOW_ATTR & 0xFF;
+	uint16_t body_len = (uint16_t)json_len;
+	ctrl[off++] = (body_len >> 8) & 0xFF;
+	ctrl[off++] = body_len & 0xFF;
+
+	memcpy(&ctrl[off], json, json_len);
+	off += json_len;
+	free(json);
+
+	uint32_t seq = ctx->adv_seq_unprotected++;
+	uint64_t ntp = timestampNTP_u64();
+	uint32_t ts = (uint32_t)((ntp * 1000000ULL) >> 16);
+	uint32_t ssrc = rist_adv_ssrc_unprotected(ctx->adv_ssrc_base);
+
+	int total = rist_adv_build_control(pkt, seq, ts, ssrc, ctrl, off);
+	if (total < 0)
+		return -1;
+
+	ssize_t ret = rist_transport_sendto(peer, pkt, (size_t)total, 0);
+	if (ret < 0)
+		_librist_log_send_error(peer, errno, (size_t)total, "adv-flow-attr sendto");
+
+	return (ret > 0) ? 0 : -1;
+}
+
+/* --------------------------------------------------------------------------
  * Control message receive dispatcher
  *
  * Called from the Advanced Profile receive path when enc_type == CONTROL.
@@ -608,6 +679,26 @@ int rist_adv_recv_control(struct rist_peer *peer,
 		rist_log_priv(ctx, RIST_LOG_DEBUG,
 			"Advanced Keep-Alive: caps=0x%08x (I=%d)\n",
 			caps, peer->remote_supports_advanced);
+		return 0;
+	}
+
+	case RIST_ADV_CI_FLOW_ATTR: {
+		if (body_len == 0)
+			return 0;
+		rist_log_priv(ctx, RIST_LOG_DEBUG,
+			"Advanced Flow Attribute received (%u bytes)\n", body_len);
+		if (peer->receiver_ctx) {
+			struct rist_receiver *rcv = peer->receiver_ctx;
+			if (rcv->receiver_flow_attr_callback) {
+				char json_buf[RIST_MAX_PACKET_SIZE];
+				size_t copy_len = body_len < sizeof(json_buf) - 1 ? body_len : sizeof(json_buf) - 1;
+				memcpy(json_buf, body, copy_len);
+				json_buf[copy_len] = '\0';
+				rcv->receiver_flow_attr_callback(
+					rcv->receiver_flow_attr_callback_argument,
+					peer, json_buf, copy_len);
+			}
+		}
 		return 0;
 	}
 

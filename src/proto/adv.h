@@ -484,6 +484,7 @@ RIST_PRIV int rist_adv_send_type8(struct rist_peer *peer,
 RIST_PRIV int rist_adv_send_psk_nonce(struct rist_peer *peer,
                                        const uint8_t nonce[4],
                                        uint16_t key_size_bits);
+RIST_PRIV int rist_adv_send_flow_attr(struct rist_peer *peer);
 RIST_PRIV int rist_adv_recv_control(struct rist_peer *peer,
                                      const uint8_t *ctrl_payload,
                                      size_t ctrl_len);

@@ -362,6 +362,143 @@ static int test_seq_index_mapping(void)
 	return 0;
 }
 
+static int test_type8_roundtrip(void)
+{
+	printf("--- test_type8_roundtrip ---\n");
+
+	/* Simulate a GRE keepalive payload wrapped in Type 8 */
+	uint8_t fake_gre[] = { 0x00, 0x00, 0x08, 0x00, /* GRE flags + proto */
+	                        0xDE, 0xAD, 0xBE, 0xEF, /* some payload */
+	                        0xCA, 0xFE, 0xBA, 0xBE };
+	size_t gre_len = sizeof(fake_gre);
+
+	uint8_t pkt[512];
+	struct rist_adv_params params;
+	memset(&params, 0, sizeof(params));
+	params.seq = 0x00010042;
+	params.timestamp = 123456;
+	params.ssrc = 0xAABBCC00;  /* even = Protected */
+	params.enc_type = RIST_ADV_TYPE_GRE_MAIN;
+	params.first_frag = true;
+	params.last_frag = true;
+	params.expedite = true;
+
+	int total = rist_adv_build(pkt, &params, fake_gre, gre_len);
+	CHECK(total > 0, "Type 8 build should succeed");
+
+	struct rist_adv_parsed parsed;
+	int rc = rist_adv_parse(pkt, (size_t)total, &parsed);
+	CHECK(rc == 0, "Type 8 parse should succeed");
+	CHECK(parsed.enc_type == RIST_ADV_TYPE_GRE_MAIN, "enc_type should be GRE_MAIN (8)");
+	CHECK(parsed.seq == 0x00010042, "seq should round-trip");
+	CHECK(parsed.payload_len == gre_len, "payload length should match GRE length");
+	CHECK(memcmp(parsed.payload, fake_gre, gre_len) == 0, "GRE payload should round-trip");
+
+	return 0;
+}
+
+static int test_seq32_index_full_range(void)
+{
+	printf("--- test_seq32_index_full_range ---\n");
+
+	/* Verify that 32-bit seqs map to unique slots within a power-of-2 queue.
+	 * queue_max = 524288 = RIST_SERVER_QUEUE_BUFFERS.
+	 * Two seqs that differ only in the high 16 bits must map to different slots. */
+	uint32_t queue_max = 524288; /* RIST_SERVER_QUEUE_BUFFERS */
+	uint32_t mask = queue_max - 1;
+
+	uint32_t seq_a = 0x00000042;
+	uint32_t seq_b = 0x00010042; /* differs in bit 16 */
+	uint32_t seq_c = 0x00040042; /* differs in bit 18 — within queue_max range */
+
+	uint32_t idx_a = seq_a & mask;
+	uint32_t idx_b = seq_b & mask;
+	uint32_t idx_c = seq_c & mask;
+
+	CHECK(idx_a != idx_b, "seq_a and seq_b must map to different slots with 32-bit index");
+	CHECK(idx_a != idx_c, "seq_a and seq_c must map to different slots");
+	CHECK(idx_b != idx_c, "seq_b and seq_c must map to different slots");
+
+	/* Verify the same seqs WOULD collide with 16-bit truncation */
+	CHECK(((uint16_t)seq_a) == ((uint16_t)seq_b), "seq_a and seq_b collide in 16-bit");
+	CHECK(((uint16_t)seq_a) == ((uint16_t)seq_c), "seq_a and seq_c collide in 16-bit");
+
+	/* Seqs separated by exactly queue_max map to the same slot (correct circular wrap) */
+	uint32_t seq_wrap = seq_a + queue_max;
+	CHECK((seq_wrap & mask) == idx_a, "seq separated by queue_max should wrap to same slot");
+
+	/* Verify wraparound: seq & mask stays within bounds */
+	uint32_t seq_max = 0xFFFFFFFF;
+	CHECK((seq_max & mask) < queue_max, "max seq should be within queue bounds");
+	CHECK((0 & mask) == 0, "seq 0 should map to slot 0");
+
+	return 0;
+}
+
+static int test_flow_id_virt_port_mapping(void)
+{
+	printf("--- test_flow_id_virt_port_mapping ---\n");
+
+	uint8_t buf[2048];
+	const uint8_t payload[] = {0xBB};
+
+	uint16_t dst_port = 5000;
+	uint16_t src_port = 1971;
+
+	struct rist_adv_flow_id fid;
+	fid.outer = htons(dst_port);
+	fid.inner_hi = (uint8_t)((src_port >> 4) & 0xFF);
+	fid.inner_lo_sub = (uint8_t)((src_port & 0x0F) << 4);
+
+	struct rist_adv_params params;
+	memset(&params, 0, sizeof(params));
+	params.seq = 42;
+	params.timestamp = 100;
+	params.ssrc = 0x50;
+	params.enc_type = RIST_ADV_TYPE_DIRECT;
+	params.first_frag = true;
+	params.last_frag = true;
+	params.flow_id = &fid;
+
+	int total = rist_adv_build(buf, &params, payload, sizeof(payload));
+	CHECK(total > 0, "build with flow_id for virt port");
+
+	struct rist_adv_parsed parsed;
+	CHECK(rist_adv_parse(buf, (size_t)total, &parsed) == 0, "parse flow_id virt port");
+	CHECK(parsed.has_flow_id, "I flag set");
+
+	uint16_t recovered_dst = rist_adv_flow_outer(parsed.flow_id);
+	uint16_t recovered_src = rist_adv_flow_inner(parsed.flow_id);
+
+	char msg[128];
+	snprintf(msg, sizeof(msg), "dst_port round-trip: sent=%u got=%u", dst_port, recovered_dst);
+	CHECK(recovered_dst == dst_port, msg);
+
+	snprintf(msg, sizeof(msg), "src_port round-trip (12-bit): sent=%u got=%u", src_port & 0xFFF, recovered_src);
+	CHECK(recovered_src == (src_port & 0xFFF), msg);
+
+	/* Test with default RIST ports */
+	uint16_t dst2 = 1968;
+	uint16_t src2 = 32768 + 7; /* ephemeral-range port */
+	struct rist_adv_flow_id fid2;
+	fid2.outer = htons(dst2);
+	fid2.inner_hi = (uint8_t)((src2 >> 4) & 0xFF);
+	fid2.inner_lo_sub = (uint8_t)((src2 & 0x0F) << 4);
+
+	params.flow_id = &fid2;
+	params.seq = 43;
+	total = rist_adv_build(buf, &params, payload, sizeof(payload));
+	CHECK(total > 0, "build with default ports");
+
+	CHECK(rist_adv_parse(buf, (size_t)total, &parsed) == 0, "parse default ports");
+	CHECK(rist_adv_flow_outer(parsed.flow_id) == 1968, "default dst_port 1968");
+
+	/* Inner is 12-bit, so only low 12 bits of 32775 survive */
+	CHECK(rist_adv_flow_inner(parsed.flow_id) == (src2 & 0xFFF), "ephemeral src_port low 12 bits");
+
+	return 0;
+}
+
 int main(void)
 {
 	int failures = 0;
@@ -376,6 +513,9 @@ int main(void)
 	failures += test_malformed_packets();
 	failures += test_timestamp_conversion();
 	failures += test_seq_index_mapping();
+	failures += test_type8_roundtrip();
+	failures += test_seq32_index_full_range();
+	failures += test_flow_id_virt_port_mapping();
 
 	printf("Advanced Profile round-trip tests: %d/%d passed\n", pass_count, test_count);
 	if (failures) {

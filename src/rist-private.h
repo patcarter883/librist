@@ -470,8 +470,9 @@ struct rist_sender {
 	uint64_t cooldown_time;
 	int cooldown_mode;
 
-	/* Recovery */
-	uint32_t seq_index[UINT16_SIZE];
+	/* Recovery — sized to RIST_SERVER_QUEUE_BUFFERS so Advanced Profile
+	 * can index with the full 32-bit seq space (seq & (queue_max - 1)). */
+	uint32_t seq_index[RIST_SERVER_QUEUE_BUFFERS];
 	size_t sender_recover_min_time;
 	size_t sender_queue_buffer_size;
 

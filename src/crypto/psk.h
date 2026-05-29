@@ -62,4 +62,5 @@ RIST_PRIV void _librist_crypto_psk_encrypt_continue(struct rist_key *key, const 
 RIST_PRIV int _librist_crypto_psk_set_passphrase(struct rist_key *key, const uint8_t *passsphrase, size_t passphrase_len);
 RIST_PRIV void _librist_crypto_psk_get_passphrase(struct rist_key *key, const uint8_t **passphrase, size_t *passphrase_len);
 RIST_PRIV void _librist_crypto_aes_ctr(const uint8_t key[], int key_size, uint8_t iv[], const uint8_t inbuf[], uint8_t outbuf[], size_t payload_len);
+RIST_PRIV void _librist_crypto_psk_preannounce_nonce(struct rist_key *key, const uint8_t nonce[4], uint32_t key_size_bits);
 #endif

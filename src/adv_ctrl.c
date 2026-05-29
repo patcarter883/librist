@@ -520,7 +520,7 @@ int rist_adv_recv_control(struct rist_peer *peer,
 	uint16_t ci = (uint16_t)((ctrl_payload[0] << 8) | ctrl_payload[1]);
 	uint16_t body_len = (uint16_t)((ctrl_payload[2] << 8) | ctrl_payload[3]);
 
-	if (4 + body_len > ctrl_len)
+	if ((size_t)4 + body_len > ctrl_len)
 		return -1;
 
 	const uint8_t *body = ctrl_payload + 4;

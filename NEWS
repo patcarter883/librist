@@ -47,10 +47,18 @@ New Features:
   - PSK encryption mode 1 (AES-CTR, Main Profile compatible) with
     per-packet Nonce/IV in the AP header.
   - Future Nonce Announcement (CI=0x8011) for zero-latency key rotation.
+  - Flow ID field (I flag): virt_dst_port and virt_src_port map to/from
+    the AP Outer/Inner Flow ID hierarchy on the wire.
+  - LZ4 payload compression (LPC=1): sender compresses before encryption,
+    receiver decompresses after decryption.  Controlled by the existing
+    ?compression=1 URL parameter; receiver auto-detects via the LPC field.
+    Bundled LZ4 library in contrib/lz4/ with system-library fallback.
   - Baseline.Direct conformance for single-flow encrypted point-to-point
     RIST transport with ARQ.
-  - 10 integration tests (basic, packet loss, encryption, mismatch).
-  - 162 unit tests (wire format, timestamp, seq_index, Type 8, PSK modes).
+  - 16 integration tests (basic, packet loss, encryption, mismatch,
+    flow-id, lz4, lz4+encryption).
+  - 180 unit tests (wire format, timestamp, seq_index, Type 8, PSK modes,
+    Flow ID mapping, LZ4 roundtrip).
 
   WebAssembly / Emscripten:
   - TUN device stubs for Emscripten targets.

@@ -10,6 +10,7 @@
  */
 
 #include "proto/adv.h"
+#include <lz4.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -499,6 +500,49 @@ static int test_flow_id_virt_port_mapping(void)
 	return 0;
 }
 
+static int test_lz4_header_roundtrip(void)
+{
+	uint8_t payload[] = "Hello, this is a test payload for LZ4 compression roundtrip "
+	                    "with enough data to make compression meaningful in the test.";
+	uint8_t compressed[256];
+	uint8_t decompressed[256];
+
+	int clen = LZ4_compress_default((const char *)payload, (char *)compressed,
+	                                (int)sizeof(payload), (int)sizeof(compressed));
+	CHECK(clen > 0, "LZ4 compress succeeds");
+
+	int dlen = LZ4_decompress_safe((const char *)compressed, (char *)decompressed,
+	                               clen, (int)sizeof(decompressed));
+	CHECK(dlen == (int)sizeof(payload), "LZ4 decompress returns original size");
+	CHECK(memcmp(payload, decompressed, sizeof(payload)) == 0, "LZ4 roundtrip data matches");
+
+	uint8_t buf[1024];
+	struct rist_adv_params params;
+	memset(&params, 0, sizeof(params));
+	params.seq = 99;
+	params.timestamp = 12345;
+	params.ssrc = 0x1000;
+	params.enc_type = RIST_ADV_TYPE_DIRECT;
+	params.lpc_mode = RIST_ADV_LPC_LZ4;
+	params.first_frag = true;
+	params.last_frag = true;
+
+	int total = rist_adv_build(buf, &params, compressed, (size_t)clen);
+	CHECK(total > 0, "build LZ4 compressed packet");
+
+	struct rist_adv_parsed parsed;
+	CHECK(rist_adv_parse(buf, (size_t)total, &parsed) == 0, "parse LZ4 packet");
+	CHECK(parsed.lpc_mode == RIST_ADV_LPC_LZ4, "LPC mode is LZ4");
+	CHECK(parsed.payload_len == (size_t)clen, "compressed payload length preserved");
+
+	dlen = LZ4_decompress_safe((const char *)parsed.payload, (char *)decompressed,
+	                           (int)parsed.payload_len, (int)sizeof(decompressed));
+	CHECK(dlen == (int)sizeof(payload), "decompressed from parsed packet");
+	CHECK(memcmp(payload, decompressed, sizeof(payload)) == 0, "data matches after parse+decompress");
+
+	return 0;
+}
+
 int main(void)
 {
 	int failures = 0;
@@ -516,6 +560,7 @@ int main(void)
 	failures += test_type8_roundtrip();
 	failures += test_seq32_index_full_range();
 	failures += test_flow_id_virt_port_mapping();
+	failures += test_lz4_header_roundtrip();
 
 	printf("Advanced Profile round-trip tests: %d/%d passed\n", pass_count, test_count);
 	if (failures) {

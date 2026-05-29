@@ -40,7 +40,7 @@ platform_files = []
 inc = []
 inc += include_directories('.', 'src', 'include/librist', 'include', 'contrib')
 
-#builtin_lz4 = get_option('builtin_lz4')
+builtin_lz4 = get_option('builtin_lz4')
 builtin_cjson = get_option('builtin_cjson')
 builtin_mbedtls = get_option('builtin_mbedtls')
 
@@ -266,6 +266,22 @@ if builtin_cjson
 									include_directories : include_directories('contrib/contrib_cJSON'))
 endif
 
+if not builtin_lz4
+	lz4_lib = dependency('liblz4', required: false)
+	if not lz4_lib.found()
+		lz4_lib = cc.find_library('lz4', required: required_library, has_headers: ['lz4.h'])
+		if not lz4_lib.found()
+			builtin_lz4 = true
+		endif
+	endif
+endif
+if builtin_lz4
+	message('Using builtin LZ4 library')
+	lz4_lib = declare_dependency(
+		sources: 'contrib/lz4/lz4.c',
+		include_directories : include_directories('contrib/lz4'))
+endif
+
 crypto_deps = []
 
 mbedcrypto_lib_found = false
@@ -363,6 +379,7 @@ librist = library('librist',
 		deps,
 		stdatomic_dependency,
 		cjson_lib,
+		lz4_lib,
 	],
 	name_prefix : '',
 	version: librist_version,

@@ -89,6 +89,12 @@ test('Advanced profile encryption mismatch reverse (should fail)', test_send_rec
 test('Advanced profile Flow ID server mode virt-dst-port', test_send_receive, args: ['2', 'rist://@127.0.0.1:7040?virt-dst-port=5000', 'rist://127.0.0.1:7040?virt-dst-port=5000', '0'],suite: ['advanced', 'unicast', 'server', 'flow-id'])
 test('Advanced profile Flow ID client mode virt-dst-port', test_send_receive, args: ['2', 'rist://127.0.0.1:7041?virt-dst-port=5000', 'rist://@127.0.0.1:7041?virt-dst-port=5000', '0'],suite: ['advanced', 'unicast', 'client', 'flow-id'])
 
+###Phase D6: LZ4 payload compression
+test('Advanced profile LZ4 compression server mode', test_send_receive, args: ['2', 'rist://@127.0.0.1:7050', 'rist://127.0.0.1:7050?compression=1', '0'],suite: ['advanced', 'unicast', 'server', 'lz4'])
+test('Advanced profile LZ4 compression client mode', test_send_receive, args: ['2', 'rist://127.0.0.1:7051', 'rist://@127.0.0.1:7051?compression=1', '0'],suite: ['advanced', 'unicast', 'client', 'lz4'])
+test('Advanced profile LZ4 compression + 10% loss', test_send_receive, args: ['2', 'rist://@127.0.0.1:7052', 'rist://127.0.0.1:7052?compression=1', '10'],suite: ['advanced', 'unicast', 'server', 'lz4'])
+test('Advanced profile LZ4 + AES128 server mode', test_send_receive, args: ['2', 'rist://@127.0.0.1:7053?secret=12345678&aes-type=128', 'rist://127.0.0.1:7053?secret=12345678&aes-type=128&compression=1', '0'],suite: ['advanced', 'unicast', 'server', 'lz4', 'encryption'])
+
 #Encryption tests where 1 side has enabled encryption these should fail
 test('Main profile encryption receive server mode unencrypted, sender client mode', test_send_receive, args: ['1', 'rist://@127.0.0.1:6003', 'rist://127.0.0.1:6003?secret=12345678&aes-type=128', '0'], should_fail: true)
 test('Main profile encryption receive server mode, sender client mode unencrypted', test_send_receive, args: ['1', 'rist://@127.0.0.1:6004?secret=12345678&aes-type=128', 'rist://127.0.0.1:6004', '0'], should_fail: true)

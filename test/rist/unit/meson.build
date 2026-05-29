@@ -22,3 +22,11 @@ logging_init_order = executable('logging_init_order',
                                 include_directories : inc,
                                 link_with : librist)
 test('logging_init_order', logging_init_order, suite:['unit'])
+
+# Advanced Profile (TR-06-3) header parse/build round-trip tests.
+# Compiles adv.c directly to access RIST_PRIV (hidden-visibility) symbols.
+test_adv_roundtrip = executable('test_adv_roundtrip',
+                                'test_adv_roundtrip.c',
+                                '../../../src/adv.c',
+                                include_directories : inc)
+test('adv_roundtrip', test_adv_roundtrip, suite:['unit'])

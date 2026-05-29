@@ -44,8 +44,7 @@ int rist_receiver_create(struct rist_ctx **_ctx, enum rist_profile profile,
 	}
 	if (profile == RIST_PROFILE_ADVANCED)
 	{
-		rist_log_priv2(logging_settings, RIST_LOG_WARN, "Advanced profile not implemented yet, using main profile instead\n");
-		profile = RIST_PROFILE_MAIN;
+		rist_log_priv2(logging_settings, RIST_LOG_INFO, "Using Advanced profile (VSF TR-06-3)\n");
 	}
 	struct rist_receiver *ctx = calloc(1, sizeof(*ctx));
 	if (!ctx)
@@ -345,8 +344,7 @@ int rist_sender_create(struct rist_ctx **_ctx, enum rist_profile profile,
 
 	if (profile == RIST_PROFILE_ADVANCED)
 	{
-		rist_log_priv2(logging_settings, RIST_LOG_WARN, "Advanced profile not implemented yet, using main profile instead\n");
-		profile = RIST_PROFILE_MAIN;
+		rist_log_priv2(logging_settings, RIST_LOG_INFO, "Using Advanced profile (VSF TR-06-3)\n");
 	}
 
 	if (flow_id % 2 != 0)
@@ -404,7 +402,10 @@ int rist_sender_create(struct rist_ctx **_ctx, enum rist_profile profile,
 	}
 
 	ctx->sender_queue_delete_index = 1;
-	ctx->sender_queue_max = RIST_SERVER_QUEUE_BUFFERS;
+	if (profile == RIST_PROFILE_ADVANCED)
+		ctx->sender_queue_max = UINT16_SIZE;
+	else
+		ctx->sender_queue_max = RIST_SERVER_QUEUE_BUFFERS;
 	atomic_init(&ctx->sender_queue_write_index, 1);
 	atomic_init(&ctx->sender_queue_read_index, 0);
 

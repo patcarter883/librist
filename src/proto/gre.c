@@ -209,14 +209,27 @@ ssize_t _librist_proto_gre_send_data(struct rist_peer *p, uint8_t payload_type, 
 }
 
 void _librist_proto_gre_send_keepalive(struct rist_peer *p, uint8_t gre_version) {
-	struct rist_gre_keepalive ka = {0};
-	memcpy(ka.mac_array, p->mac_addr, sizeof(ka.mac_array));
-	SET_BIT(ka.capabilities1, 0); // Null packet deletion
-	SET_BIT(ka.capabilities1, 2); // SMPTE-2022-7
-	SET_BIT(ka.capabilities1, 5); // Bonding
-	//SET_BIT(ka.capabilities2, 3);//OTF Passphrase change
-	SET_BIT(ka.capabilities2, 5);//Reduced overhead
-	_librist_proto_gre_send_data(p, 0, RIST_GRE_PROTOCOL_TYPE_KEEPALIVE, (uint8_t *)&ka, sizeof(ka), 0, 0, gre_version);
+	/* Extended keep-alive: 8 bytes (Main Profile) + 4 bytes (capabilities3/4
+	 * for TR-06-3 C/G/I bits). Older receivers will ignore the extra bytes. */
+	uint8_t ka_buf[12] = {0};
+	struct rist_gre_keepalive *ka = (struct rist_gre_keepalive *)ka_buf;
+	memcpy(ka->mac_array, p->mac_addr, sizeof(ka->mac_array));
+	SET_BIT(ka->capabilities1, 0); // Null packet deletion
+	SET_BIT(ka->capabilities1, 2); // SMPTE-2022-7
+	SET_BIT(ka->capabilities1, 5); // Bonding
+	SET_BIT(ka->capabilities2, 5); // Reduced overhead
+
+	struct rist_common_ctx *cctx = get_cctx(p);
+	size_t ka_len = sizeof(struct rist_gre_keepalive);
+	if (cctx && cctx->profile == RIST_PROFILE_ADVANCED) {
+		/* TR-06-3 Section 5.3.6: I bit (bit 31 of 32-bit capabilities) */
+		ka_buf[8]  = 0x80; /* I bit = bit 7 of capabilities3 (= bit 31 overall) */
+		ka_buf[9]  = 0;
+		ka_buf[10] = 0;
+		ka_buf[11] = 0;
+		ka_len = 12;
+	}
+	_librist_proto_gre_send_data(p, 0, RIST_GRE_PROTOCOL_TYPE_KEEPALIVE, ka_buf, ka_len, 0, 0, gre_version);
 }
 
 int _librist_proto_gre_parse_keepalive(const uint8_t buf[], size_t buflen, struct rist_keepalive_info  *info) {
@@ -240,9 +253,18 @@ int _librist_proto_gre_parse_keepalive(const uint8_t buf[], size_t buflen, struc
 	info->v = CHECK_BIT(ka->capabilities2, 5);
 	info->j = CHECK_BIT(ka->capabilities2, 4);
 	info->f = CHECK_BIT(ka->capabilities2, 3);
-	info->json_len = buflen - sizeof(*ka);
-	if (info->json_len > 0) {
-		info->json = (const char *)&buf[sizeof(*ka)];
+	/* TR-06-3 extended capabilities (4 bytes at offset 8, if present) */
+	if (buflen >= sizeof(*ka) + 4) {
+		info->adv_i = !!(buf[sizeof(*ka)]     & 0x80); /* bit 31 → I */
+		info->adv_g = !!(buf[sizeof(*ka)]     & 0x40); /* bit 30 → G */
+		info->adv_c = !!(buf[sizeof(*ka)]     & 0x20); /* bit 29 → C */
+		info->json_len = buflen - sizeof(*ka) - 4;
+		if (info->json_len > 0)
+			info->json = (const char *)&buf[sizeof(*ka) + 4];
+	} else {
+		info->json_len = buflen - sizeof(*ka);
+		if (info->json_len > 0)
+			info->json = (const char *)&buf[sizeof(*ka)];
 	}
 	return 0;
 }

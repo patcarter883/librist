@@ -23,6 +23,10 @@ struct rist_keepalive_info {
 	bool v : 1;
 	bool j : 1;
 	bool f : 1;
+	/* TR-06-3 extended capability bits (bytes 8-11 of keep-alive) */
+	bool adv_i : 1;  /* I bit: Advanced Profile capable */
+	bool adv_g : 1;  /* G bit: GRE key rotation capable */
+	bool adv_c : 1;  /* C bit: Compression capable */
 	size_t json_len;
 	const char *json;
 };

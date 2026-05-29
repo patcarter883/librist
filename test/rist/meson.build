@@ -67,6 +67,12 @@ test('Main profile encryption receive client mode, sender server mode AES256 ', 
 #Caller-controlled seq (RIST_DATA_FLAGS_USE_SEQ) passthrough
 test('Main profile USE_SEQ passthrough', test_send_receive, args: ['1', 'rist://@127.0.0.1:6020?rtt-max=10&rtt-min=1', 'rist://127.0.0.1:6020?rtt-max=10&rtt-min=1', '0', '0', '1'], suite: ['main', 'unicast', 'use_seq'])
 test('Main profile USE_SEQ passthrough 10% loss', test_send_receive, args: ['1', 'rist://@127.0.0.1:6021?rtt-max=10&rtt-min=1', 'rist://127.0.0.1:6021?rtt-max=10&rtt-min=1', '10', '0', '1'], suite: ['main', 'unicast', 'use_seq'])
+###Advanced profile tests (VSF TR-06-3):
+test('Advanced profile receive server mode, sender client mode', test_send_receive, args: ['2', 'rist://@127.0.0.1:7001?rtt-max=10&rtt-min=1', 'rist://127.0.0.1:7001?rtt-max=10&rtt-min=1', '0'],suite: ['advanced', 'unicast', 'server'])
+test('Advanced profile receive server mode, sender client mode packet loss 10%', test_send_receive, args: ['2', 'rist://@127.0.0.1:7002?rtt-max=10&rtt-min=1', 'rist://127.0.0.1:7002?rtt-max=10&rtt-min=1', '10'],suite: ['advanced', 'unicast', 'server'])
+test('Advanced profile receive client mode, sender server mode', test_send_receive, args: ['2', 'rist://127.0.0.1:7003?rtt-max=10&rtt-min=1', 'rist://@127.0.0.1:7003?rtt-max=10&rtt-min=1', '0'],suite: ['advanced', 'unicast', 'client'])
+test('Advanced profile receive client mode, sender server mode packet loss 10%', test_send_receive, args: ['2', 'rist://127.0.0.1:7004?rtt-max=10&rtt-min=1', 'rist://@127.0.0.1:7004?rtt-max=10&rtt-min=1', '10'],suite: ['advanced', 'unicast', 'client'])
+
 #Encryption tests where 1 side has enabled encryption these should fail
 test('Main profile encryption receive server mode unencrypted, sender client mode', test_send_receive, args: ['1', 'rist://@127.0.0.1:6003', 'rist://127.0.0.1:6003?secret=12345678&aes-type=128', '0'], should_fail: true)
 test('Main profile encryption receive server mode, sender client mode unencrypted', test_send_receive, args: ['1', 'rist://@127.0.0.1:6004?secret=12345678&aes-type=128', 'rist://127.0.0.1:6004', '0'], should_fail: true)

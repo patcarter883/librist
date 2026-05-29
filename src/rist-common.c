@@ -14,6 +14,7 @@
 #include "crypto/psk.h"
 #include "crypto/random.h"
 #include "udp-private.h"
+#include "transport-private.h"
 #include "udpsocket.h"
 #include "endian-shim.h"
 #include "time-shim.h"
@@ -2494,7 +2495,7 @@ static void rist_peer_recv(struct evsocket_ctx *evctx, int fd, short revents, vo
 	uint8_t *recv_buf_npd = cctx->buf.recv_npd;
 	uint16_t port = 0;
 
-	ssize_t ret = recvfrom(peer->sd, (char*)recv_buf, RIST_MAX_PACKET_SIZE, MSG_DONTWAIT, (struct sockaddr *)addr, &addrlen);
+	ssize_t ret = rist_transport_recvfrom(peer, recv_buf, RIST_MAX_PACKET_SIZE, MSG_DONTWAIT, addr, &addrlen);
 	if (ss.ss_family == AF_INET)
 		port = htons(((struct sockaddr_in *)addr)->sin_port);
 	else
@@ -2531,6 +2532,124 @@ static void rist_peer_recv(struct evsocket_ctx *evctx, int fd, short revents, vo
 	uint8_t rist_gre_version = RIST_GRE_VERSION_MIN;
 	if (cctx->profile > RIST_PROFILE_SIMPLE)
 	{
+		/* Section 9 (TR-06-3): Auto-detect GRE vs RTP framing.
+		 * First byte bits [7:6]:
+		 *   0b0x = GRE (bit 7 = 0 → Main/Advanced GRE tunnel)
+		 *   0b10 = RTP V=2 → Advanced Profile if PT=127 */
+		if (cctx->profile == RIST_PROFILE_ADVANCED &&
+		    recv_bufsize >= RIST_ADV_HEADER_MIN &&
+		    (recv_buf[0] & 0xC0) == 0x80) {
+			/* Looks like RTP V=2. Check PT field for Advanced Profile. */
+			uint8_t pt = recv_buf[1] & 0x7F;
+			if (pt == RIST_ADV_PT || pt >= 96) {
+				struct rist_adv_parsed adv_parsed;
+				if (rist_adv_parse(recv_buf, recv_bufsize, &adv_parsed) == 0) {
+					p = _librist_peer_match_peer_addr(peer, family, addr);
+					if (!p) {
+						if (peer->listening || peer->multicast_sender) {
+							p = peer_initialize(NULL, peer->sender_ctx, peer->receiver_ctx);
+							p->handled_first = false;
+							p->adv_peer_id = ++cctx->peer_counter;
+							p->parent = peer;
+							peer_copy_settings(peer, p);
+							if (peer->receiver_ctx) {
+								p->remote_port = port;
+								p->local_port = peer->local_port;
+							} else {
+								p->remote_port = peer->remote_port;
+								p->local_port = peer->local_port;
+							}
+							p->address_family = family;
+							p->address_len = addrlen;
+							p->listening = 0;
+							p->is_rtcp = peer->is_rtcp;
+							p->is_data = peer->is_data;
+							p->peer_data = p;
+							p->is_advanced = true;
+							memcpy(&p->u.address, addr, addrlen);
+							p->sd = peer->sd;
+							p->authenticated = false;
+							p->event_recv = peer->event_recv;
+							p->send_keepalive = true;
+							if (cctx->auth.conn_cb) {
+								char incoming_ip_str[INET6_ADDRSTRLEN];
+								char *ip_str = get_ip_str(&p->u.address, incoming_ip_str, INET6_ADDRSTRLEN);
+								char parent_ip_str[INET6_ADDRSTRLEN];
+								char *parent_str = get_ip_str(&p->parent->u.address, parent_ip_str, INET6_ADDRSTRLEN);
+								if (!parent_str) parent_str = "";
+								uint16_t parent_port = 0;
+								if (p->parent->u.storage.ss_family == AF_INET)
+									parent_port = htons(p->parent->u.inaddr.sin_port);
+								else
+									parent_port = htons(p->parent->u.inaddr6.sin6_port);
+								if (ip_str && cctx->auth.conn_cb(cctx->auth.arg, ip_str, port, parent_str, parent_port, p)) {
+									free(p);
+									return;
+								}
+							}
+							peer_append(p);
+						} else {
+							return;
+						}
+					}
+					p->is_advanced = true;
+					p->last_pkt_received = now;
+
+					/* Dispatch by encapsulation type */
+					if (adv_parsed.enc_type == RIST_ADV_TYPE_CONTROL) {
+						rist_calculate_bitrate(recv_bufsize, &p->bw);
+						rist_adv_recv_control(p, adv_parsed.payload,
+						                      adv_parsed.payload_len);
+						return;
+					}
+
+					uint32_t adv_flow_id = adv_parsed.ssrc & ~(uint32_t)1;
+					retry = adv_parsed.retransmit ? 1 : 0;
+
+					if (adv_parsed.enc_type == RIST_ADV_TYPE_DIRECT) {
+						payload.data = (void *)recv_buf;
+						payload.size = recv_bufsize;
+						payload.type = RIST_PAYLOAD_TYPE_DATA_RAW;
+
+						/* Advanced Profile RTP timestamp is 32-bit at 1 MHz — too narrow
+						 * to reconstruct a full 64-bit NTP epoch timestamp. Use arrival
+						 * time for output buffering (Phase C will add RTCP SR sync). */
+						uint64_t adv_source_time = now;
+
+						if (peer->receiver_ctx) {
+							rist_calculate_bitrate(recv_bufsize, &p->bw);
+							struct rist_buffer adv_payload = {
+								.data = (void *)adv_parsed.payload,
+								.size = adv_parsed.payload_len,
+								.type = RIST_PAYLOAD_TYPE_DATA_RAW,
+								.src_port = (uint16_t)(32768 + p->adv_peer_id),
+								.dst_port = p->config.virt_dst_port,
+							};
+							rist_receiver_recv_data(p, adv_parsed.seq, adv_flow_id,
+								adv_source_time, now, &adv_payload, retry,
+								RIST_PAYLOAD_TYPE_DATA_RAW, recv_bufsize, 0);
+						}
+						return;
+					}
+
+					if (adv_parsed.enc_type == RIST_ADV_TYPE_GRE_MAIN) {
+						/* Type 8: Strip Advanced Profile header, process inner GRE.
+						 * The payload is a Main Profile GRE packet — feed it back
+						 * through the existing GRE receive path by updating the
+						 * buffer pointer and falling through. */
+						recv_buf = (uint8_t *)adv_parsed.payload;
+						recv_bufsize = adv_parsed.payload_len;
+						/* Fall through to GRE processing below */
+					} else {
+						rist_log_priv(get_cctx(peer), RIST_LOG_DEBUG,
+							"Advanced Profile: unsupported encapsulation type %u\n",
+							adv_parsed.enc_type);
+						return;
+					}
+				}
+			}
+		}
+
 		struct rist_gre_hdr *gre = NULL;
 		// Make sure we have enough bytes
 		if (recv_bufsize < (int)sizeof(*gre)) {
@@ -2872,7 +2991,13 @@ protocol_bypass:
 				rist_log_priv(get_cctx(peer), RIST_LOG_INFO, "Keepalive JSON:\n%.*s\n", json_log_len, info.json);
 			}
 			//TODO: add callback?
-			//TODO: handle capabilities in some way
+			/* TR-06-3 Section 9: detect Advanced Profile support via I bit */
+			if (info.adv_i && !p->remote_supports_advanced) {
+				p->remote_supports_advanced = true;
+				rist_log_priv(get_cctx(peer), RIST_LOG_INFO,
+					"Peer %u advertises Advanced Profile capability (I=1)\n",
+					p->adv_peer_id);
+			}
 			memcpy(&p->data, &info.ka, sizeof(peer->data));
 		}
 		p->last_pkt_received = now;
@@ -3290,8 +3415,10 @@ static void sender_send_data(struct rist_sender *ctx, int maxcount)
 			}
 			else {
 				rist_sender_send_data_balanced(ctx, buffer);
-				// For non-advanced mode seq to index mapping
-				ctx->seq_index[buffer->seq_rtp] = (uint32_t)idx;
+				if (ctx->common.profile == RIST_PROFILE_ADVANCED)
+					ctx->seq_index[(uint16_t)(buffer->seq & 0xFFFF)] = (uint32_t)idx;
+				else
+					ctx->seq_index[buffer->seq_rtp] = (uint32_t)idx;
 			}
 		}
 
@@ -3478,7 +3605,7 @@ static void rist_peer_periodic(struct rist_peer *p, uint64_t now) {
 			if (p->remote_port != 0)
 				rist_peer_rtcp(NULL, p);
 		}
-		if (get_cctx(p)->profile == RIST_PROFILE_MAIN && p->next_keepalive_packet <= now) {
+		if (get_cctx(p)->profile >= RIST_PROFILE_MAIN && p->next_keepalive_packet <= now) {
 			p->next_keepalive_packet = now + ONE_SECOND;
 			_librist_proto_gre_send_keepalive(p, p->rist_gre_version);
 #if HAVE_SRP_SUPPORT
@@ -3670,6 +3797,16 @@ int init_common_ctx(struct rist_common_ctx *ctx, enum rist_profile profile)
 
 	ctx->profile = profile;
 	ctx->stats_report_time = 0;
+
+	if (profile == RIST_PROFILE_ADVANCED) {
+		/* Generate a random even SSRC base for the Protected flow.
+		 * The Unprotected flow uses ssrc_base | 1 (Section 5.2.1). */
+		uint32_t rnd = 0;
+		_librist_crypto_ramdom_get_bytes((uint8_t *)&rnd, sizeof(rnd));
+		ctx->adv_ssrc_base = rnd & ~(uint32_t)1;
+		ctx->adv_seq_protected = 0;
+		ctx->adv_seq_unprotected = 0;
+	}
 
 	if (pthread_mutex_init(&ctx->peerlist_lock, NULL) != 0) {
 		rist_log_priv3( RIST_LOG_ERROR, "Failed to init ctx->peerlist_lock\n");

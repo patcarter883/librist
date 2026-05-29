@@ -31,6 +31,7 @@
 #include <stdatomic.h>
 #include "librist/logging.h"
 #include "proto/gre.h"
+#include "proto/adv.h"
 
 struct cJSON;
 
@@ -330,6 +331,11 @@ struct rist_common_ctx {
 	uint32_t seq;
 	uint16_t seq_rtp;
 
+	/* Advanced Profile (TR-06-3) state */
+	uint32_t adv_ssrc_base;       /* Even SSRC for Protected flow */
+	uint32_t adv_seq_protected;   /* 32-bit seq counter for even SSRC */
+	uint32_t adv_seq_unprotected; /* 32-bit seq counter for odd SSRC */
+
 	/* Peer counter (only the ones created by the API) */
 	uint32_t peer_counter;
 
@@ -565,6 +571,10 @@ struct rist_peer {
 	struct eapsrp_ctx *eap_ctx;
 	int eap_authentication_state;
 	uint8_t rist_gre_version;
+
+	/* Advanced Profile (TR-06-3) peer state */
+	bool is_advanced;              /* Peer operating in Advanced Profile mode */
+	bool remote_supports_advanced; /* Remote advertised I=1 in keep-alive */
 
 	/* compression flag (sender only) */
 	bool compression;

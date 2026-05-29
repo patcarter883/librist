@@ -345,7 +345,7 @@ static int process_eap_request_srp_server_validator(struct eapsrp_ctx *ctx, uint
 }
 
 static int eap_srp_send_password(struct eapsrp_ctx *ctx, uint8_t identifier, const uint8_t *password, size_t password_len) {
-	if (password_len > (1500 - (EAPOL_EAP_HDRS_OFFSET + sizeof(struct eap_srp_hdr))))
+	if (password_len > (1500 - (EAPOL_EAP_HDRS_OFFSET + sizeof(struct eap_srp_hdr) + 1)))
 		return -1;
 	uint8_t outpkt[1500] = {0};
 	struct eap_srp_hdr *hdr = (struct eap_srp_hdr *)&outpkt[EAPOL_EAP_HDRS_OFFSET];

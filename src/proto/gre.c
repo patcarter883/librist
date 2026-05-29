@@ -138,6 +138,24 @@ ssize_t _librist_proto_gre_send_data(struct rist_peer *p, uint8_t payload_type, 
 	ssize_t ret;
 	int errorcode = 0;
 
+	/* Type 8 wrapping: when both sides have negotiated Advanced Profile,
+	 * wrap outbound GRE packets in an AP Type 8 envelope so the remote
+	 * can accept them on a unified AP port. */
+	if (get_cctx(p)->profile == RIST_PROFILE_ADVANCED &&
+	    p->is_advanced && p->remote_supports_advanced) {
+		uint8_t gre_flat[RIST_MAX_PACKET_SIZE];
+		size_t gre_total = hdr_len + payload_len;
+		if (gre_total <= sizeof(gre_flat)) {
+			memcpy(gre_flat, hdr_buf, hdr_len);
+			memcpy(gre_flat + hdr_len, payload_wr, payload_len);
+			ret = (rist_adv_send_type8(p, gre_flat, gre_total) == 0)
+			      ? (ssize_t)gre_total : -1;
+			if (modifying_payload)
+				free(payload_wr);
+			return ret;
+		}
+	}
+
 #ifndef _WIN32
 	struct msghdr msghdr;
 	struct iovec iov[2];

@@ -1230,10 +1230,6 @@ void receiver_nack_output(struct rist_receiver *ctx, struct rist_flow *f)
 	struct rist_missing_buffer **prev = &f->missing;
 	struct rist_missing_buffer *previous = NULL;
 	int empty = 0;
-	uint32_t seq_msb = 0;
-	if (mb)
-		seq_msb = mb->seq >> 16;
-
 	while (mb) {
 		int remove_from_queue_reason = 0;
 		struct rist_peer *peer = mb->peer;
@@ -1309,17 +1305,7 @@ void receiver_nack_output(struct rist_receiver *ctx, struct rist_flow *f)
 			// Packet is still missing, re-stamp the expiration time so we can re-add to queue
 			// We reject the next retry for a number of reasons checked inside the function,
 			// in which case the nack will never be resent and we signal a queue removal
-			if (seq_msb != (mb->seq >> 16))
-			{
-				// We do not mix/group missing sequence numbers with different upper 2 bytes
-				if (ctx->common.debug)
-					rist_log_priv(&ctx->common, RIST_LOG_DEBUG,
-							"seq-msb changed from %"PRIu32" to %"PRIu32" (%"PRIu32", %zu, %"PRIu32")\n",
-							seq_msb, mb->seq >> 16, mb->seq, f->nacks.counter,
-							f->missing_counter);
-				send_nack_group(ctx, f);
-			}
-			else if (f->nacks.counter == (maxcounter - 1)) {
+			if (f->nacks.counter == (maxcounter - 1)) {
 				rist_log_priv(&ctx->common, RIST_LOG_DEBUG,
 						"nack max counter per packet (%d) exceeded. Skipping the rest\n",
 						maxcounter);
@@ -2278,7 +2264,6 @@ static void rist_recv_rtcp(struct rist_peer *peer, uint32_t seq,
 	uint16_t processed_bytes = 0;
 	uint16_t records;
 	uint8_t subtype;
-	uint32_t nack_seq_msb = 0;
 	peer->stats_receiver_instant.received_rtcp++;
 	struct rist_common_ctx *ctx = get_cctx(peer);
 
@@ -2312,15 +2297,7 @@ static void rist_recv_rtcp(struct rist_peer *peer, uint32_t seq,
 
 		switch(ptype) {
 			case PTYPE_NACK_CUSTOM:
-				if (subtype == NACK_FMT_SEQEXT)
-				{
-					if (bytes < sizeof(struct rist_rtcp_seqext))
-						break;
-					struct rist_rtcp_seqext *seq_ext = (struct rist_rtcp_seqext *) pkt;
-					nack_seq_msb = ((uint32_t)be16toh(seq_ext->seq_msb)) << 16;
-					break;
-				}
-				else if (subtype == ECHO_RESPONSE) {
+				if (subtype == ECHO_RESPONSE) {
 					if (bytes < sizeof(struct rist_rtcp_echoext))
 						break;
 					struct rist_rtcp_echoext *echoresponse = (struct rist_rtcp_echoext *) pkt;
@@ -2344,7 +2321,7 @@ static void rist_recv_rtcp(struct rist_peer *peer, uint32_t seq,
 				}
 			case PTYPE_NACK_BITMASK:
 				//Also FMT Range
-				rist_sender_recv_nack(peer, flow_id, payload->src_port, payload->dst_port, pkt, bytes_left, nack_seq_msb);
+				rist_sender_recv_nack(peer, flow_id, payload->src_port, payload->dst_port, pkt, bytes_left, 0);
 				break;
 			case PTYPE_RR:
 				if (ntohs(rtcp->len) == 7) {
@@ -2687,23 +2664,72 @@ static void rist_peer_recv(struct evsocket_ctx *evctx, int fd, short revents, vo
 					retry = adv_parsed.retransmit ? 1 : 0;
 
 					if (adv_parsed.enc_type == RIST_ADV_TYPE_DIRECT) {
-						payload.data = (void *)recv_buf;
-						payload.size = recv_bufsize;
-						payload.type = RIST_PAYLOAD_TYPE_DATA_RAW;
+						/* PSK decryption for Advanced Profile */
+						uint8_t adv_dec_buf[RIST_MAX_PACKET_SIZE];
+						const uint8_t *adv_data = adv_parsed.payload;
+						size_t adv_data_len = adv_parsed.payload_len;
 
-						/* Advanced Profile RTP timestamp is 32-bit at 1 MHz — too narrow
-						 * to reconstruct a full 64-bit NTP epoch timestamp. Use arrival
-						 * time for output buffering (Phase C will add RTCP SR sync). */
+						if (adv_parsed.psk_mode == RIST_ADV_PSK_AES_CTR) {
+							if (!p->key_rx.key_size) {
+								if (now > (peer->log_repeat_timer + RIST_LOG_QUIESCE_TIMER)) {
+									rist_log_priv(get_cctx(peer), RIST_LOG_ERROR,
+										"Advanced Profile: encrypted data but no PSK configured\n");
+									peer->log_repeat_timer = now;
+								}
+								return;
+							}
+							if (!adv_parsed.psk_nonce || !adv_parsed.psk_iv) {
+								rist_log_priv(get_cctx(peer), RIST_LOG_ERROR,
+									"Advanced Profile: PSK AES-CTR missing nonce/IV\n");
+								return;
+							}
+							bool odd_nonce_adv = CHECK_BIT(adv_parsed.psk_nonce[0], 7);
+							struct rist_key *ak = &p->key_rx;
+							if (odd_nonce_adv)
+								ak = &p->key_rx_odd;
+							pthread_mutex_lock(&p->peer_lock);
+							uint32_t seq_nbe;
+							memcpy(&seq_nbe, adv_parsed.psk_iv, sizeof(seq_nbe));
+							_librist_crypto_psk_decrypt(ak,
+								(uint8_t *)adv_parsed.psk_nonce, seq_nbe, 1,
+								adv_parsed.payload, adv_dec_buf, adv_data_len);
+							pthread_mutex_unlock(&p->peer_lock);
+							if (ak->bad_decryption)
+								return;
+							adv_data = adv_dec_buf;
+						} else if (adv_parsed.psk_mode != RIST_ADV_PSK_NONE) {
+							if (now > (peer->log_repeat_timer + RIST_LOG_QUIESCE_TIMER)) {
+								rist_log_priv(get_cctx(peer), RIST_LOG_WARN,
+									"Advanced Profile: unsupported PSK mode %u\n",
+									adv_parsed.psk_mode);
+								peer->log_repeat_timer = now;
+							}
+							return;
+						} else if (p->key_rx.key_size) {
+							if (now > (peer->log_repeat_timer + RIST_LOG_QUIESCE_TIMER)) {
+								rist_log_priv(get_cctx(peer), RIST_LOG_ERROR,
+									"Advanced Profile: expect encrypted data but received clear\n");
+								peer->log_repeat_timer = now;
+							}
+							return;
+						}
+
 						uint64_t adv_source_time = now;
 
 						if (peer->receiver_ctx) {
 							rist_calculate_bitrate(recv_bufsize, &p->bw);
+							uint16_t adv_src_port = (uint16_t)(32768 + p->adv_peer_id);
+							uint16_t adv_dst_port = p->config.virt_dst_port;
+							if (adv_parsed.has_flow_id && adv_parsed.flow_id) {
+								adv_dst_port = rist_adv_flow_outer(adv_parsed.flow_id);
+								adv_src_port = rist_adv_flow_inner(adv_parsed.flow_id);
+							}
 							struct rist_buffer adv_payload = {
-								.data = (void *)adv_parsed.payload,
-								.size = adv_parsed.payload_len,
+								.data = (void *)adv_data,
+								.size = adv_data_len,
 								.type = RIST_PAYLOAD_TYPE_DATA_RAW,
-								.src_port = (uint16_t)(32768 + p->adv_peer_id),
-								.dst_port = p->config.virt_dst_port,
+								.src_port = adv_src_port,
+								.dst_port = adv_dst_port,
 							};
 							rist_receiver_recv_data(p, adv_parsed.seq, adv_flow_id,
 								adv_source_time, now, &adv_payload, retry,
@@ -3512,7 +3538,7 @@ static void sender_send_data(struct rist_sender *ctx, int maxcount)
 			else {
 				rist_sender_send_data_balanced(ctx, buffer);
 				if (ctx->common.profile == RIST_PROFILE_ADVANCED)
-					ctx->seq_index[(uint16_t)(buffer->seq & 0xFFFF)] = (uint32_t)idx;
+					ctx->seq_index[buffer->seq & (ctx->sender_queue_max - 1)] = (uint32_t)idx;
 				else
 					ctx->seq_index[buffer->seq_rtp] = (uint32_t)idx;
 			}
@@ -3695,15 +3721,23 @@ static PTHREAD_START_FUNC(receiver_pthread_dataout, arg)
 }
 
 static void rist_peer_periodic(struct rist_peer *p, uint64_t now) {
+	bool adv_negotiated = (get_cctx(p)->profile == RIST_PROFILE_ADVANCED &&
+	                       p->is_advanced && p->remote_supports_advanced);
 	if (p->send_keepalive) {
 		if (now > p->next_periodic_rtcp) {
 			p->next_periodic_rtcp = now + p->rtcp_keepalive_interval;
-			if (p->remote_port != 0)
+			if (p->remote_port != 0) {
 				rist_peer_rtcp(NULL, p);
+				if (adv_negotiated)
+					rist_adv_send_rtt_echo_request(p);
+			}
 		}
 		if (get_cctx(p)->profile >= RIST_PROFILE_MAIN && p->next_keepalive_packet <= now) {
 			p->next_keepalive_packet = now + ONE_SECOND;
-			_librist_proto_gre_send_keepalive(p, p->rist_gre_version);
+			if (adv_negotiated)
+				rist_adv_send_keepalive(p);
+			else
+				_librist_proto_gre_send_keepalive(p, p->rist_gre_version);
 #if HAVE_SRP_SUPPORT
 			if (!p->child && !eap_is_authenticated(p->eap_ctx) && p->eap_authentication_state == 2 && p->parent && p->parent->multicast_sender)  {
 				p->eap_authentication_state = 1;

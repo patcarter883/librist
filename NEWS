@@ -39,8 +39,18 @@ New Features:
   Advanced Profile (VSF TR-06-3):
   - Wire format and protocol integration for the Advanced Profile as
     defined by VSF TR-06-3.
-  - Phase A+B integration with existing Main Profile negotiation.
-  - Integration tests and timestamp unit tests.
+  - Native control plane: Keep-Alive with I bit (CI=0x8000), RTT Echo
+    Request/Response (CI=0x0010/0x0011), NACK Bitmask (CI=0x0000),
+    NACK Range (CI=0x0001), Unsupported Response (CI=0x8020).
+  - Full 32-bit sequence number indexing (expanded seq_index array).
+  - Type 8 GRE-over-AP encapsulation for Section 9 interoperability.
+  - PSK encryption mode 1 (AES-CTR, Main Profile compatible) with
+    per-packet Nonce/IV in the AP header.
+  - Future Nonce Announcement (CI=0x8011) for zero-latency key rotation.
+  - Baseline.Direct conformance for single-flow encrypted point-to-point
+    RIST transport with ARQ.
+  - 10 integration tests (basic, packet loss, encryption, mismatch).
+  - 162 unit tests (wire format, timestamp, seq_index, Type 8, PSK modes).
 
   WebAssembly / Emscripten:
   - TUN device stubs for Emscripten targets.

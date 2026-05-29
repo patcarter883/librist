@@ -73,6 +73,22 @@ test('Advanced profile receive server mode, sender client mode packet loss 10%',
 test('Advanced profile receive client mode, sender server mode', test_send_receive, args: ['2', 'rist://127.0.0.1:7003?rtt-max=10&rtt-min=1', 'rist://@127.0.0.1:7003?rtt-max=10&rtt-min=1', '0'],suite: ['advanced', 'unicast', 'client'])
 test('Advanced profile receive client mode, sender server mode packet loss 10%', test_send_receive, args: ['2', 'rist://127.0.0.1:7004?rtt-max=10&rtt-min=1', 'rist://@127.0.0.1:7004?rtt-max=10&rtt-min=1', '10'],suite: ['advanced', 'unicast', 'client'])
 
+###Phase C: Native control plane, 32-bit seq, Type 8 wrapping
+test('Advanced profile server mode packet loss 25% (native NACK)', test_send_receive, args: ['2', 'rist://@127.0.0.1:7010?rtt-max=10&rtt-min=1', 'rist://127.0.0.1:7010?rtt-max=10&rtt-min=1', '25'],suite: ['advanced', 'unicast', 'server', 'phase-c'])
+test('Advanced profile client mode packet loss 25% (native NACK)', test_send_receive, args: ['2', 'rist://127.0.0.1:7011?rtt-max=10&rtt-min=1', 'rist://@127.0.0.1:7011?rtt-max=10&rtt-min=1', '25'],suite: ['advanced', 'unicast', 'client', 'phase-c'])
+
+###Phase D1: PSK encryption (AES-CTR, mode 1)
+test('Advanced profile encryption server mode AES128', test_send_receive, args: ['2', 'rist://@127.0.0.1:7020?secret=12345678&aes-type=128', 'rist://127.0.0.1:7020?secret=12345678&aes-type=128', '0'],suite: ['advanced', 'unicast', 'server', 'encryption', 'phase-d1'])
+test('Advanced profile encryption client mode AES128', test_send_receive, args: ['2', 'rist://127.0.0.1:7021?secret=12345678&aes-type=128', 'rist://@127.0.0.1:7021?secret=12345678&aes-type=128', '0'],suite: ['advanced', 'unicast', 'client', 'encryption', 'phase-d1'])
+test('Advanced profile encryption server mode AES256', test_send_receive, args: ['2', 'rist://@127.0.0.1:7022?secret=12345678&aes-type=256', 'rist://127.0.0.1:7022?secret=12345678&aes-type=256', '0'],suite: ['advanced', 'unicast', 'server', 'encryption', 'phase-d1'])
+test('Advanced profile encryption server mode AES128 + 10% loss', test_send_receive, args: ['2', 'rist://@127.0.0.1:7023?secret=12345678&aes-type=128', 'rist://127.0.0.1:7023?secret=12345678&aes-type=128', '10'],suite: ['advanced', 'unicast', 'server', 'encryption', 'phase-d1'])
+test('Advanced profile encryption mismatch (should fail)', test_send_receive, args: ['2', 'rist://@127.0.0.1:7030?secret=12345678&aes-type=128', 'rist://127.0.0.1:7030', '0'], should_fail: true)
+test('Advanced profile encryption mismatch reverse (should fail)', test_send_receive, args: ['2', 'rist://@127.0.0.1:7031', 'rist://127.0.0.1:7031?secret=12345678&aes-type=128', '0'], should_fail: true)
+
+###Flow ID: stream-id via virt-dst-port on native AP Type 5
+test('Advanced profile Flow ID server mode virt-dst-port', test_send_receive, args: ['2', 'rist://@127.0.0.1:7040?virt-dst-port=5000', 'rist://127.0.0.1:7040?virt-dst-port=5000', '0'],suite: ['advanced', 'unicast', 'server', 'flow-id'])
+test('Advanced profile Flow ID client mode virt-dst-port', test_send_receive, args: ['2', 'rist://127.0.0.1:7041?virt-dst-port=5000', 'rist://@127.0.0.1:7041?virt-dst-port=5000', '0'],suite: ['advanced', 'unicast', 'client', 'flow-id'])
+
 #Encryption tests where 1 side has enabled encryption these should fail
 test('Main profile encryption receive server mode unencrypted, sender client mode', test_send_receive, args: ['1', 'rist://@127.0.0.1:6003', 'rist://127.0.0.1:6003?secret=12345678&aes-type=128', '0'], should_fail: true)
 test('Main profile encryption receive server mode, sender client mode unencrypted', test_send_receive, args: ['1', 'rist://@127.0.0.1:6004?secret=12345678&aes-type=128', 'rist://127.0.0.1:6004', '0'], should_fail: true)

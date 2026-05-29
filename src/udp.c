@@ -100,7 +100,40 @@ size_t rist_send_seq_rtcp(struct rist_peer *p, uint32_t seq_rtp, uint8_t payload
 		params.expedite = false;
 		params.retransmit = retry;
 
-		int total = rist_adv_build(adv_buf, &params, payload, payload_len);
+		struct rist_adv_flow_id fid;
+		if (dst_port || src_port) {
+			fid.outer = htons(dst_port);
+			fid.inner_hi = (uint8_t)((src_port >> 4) & 0xFF);
+			fid.inner_lo_sub = (uint8_t)((src_port & 0x0F) << 4);
+			params.flow_id = &fid;
+		}
+
+		uint8_t *enc_payload = payload;
+		uint8_t enc_buf[RIST_MAX_PACKET_SIZE];
+		uint8_t psk_iv_bytes[RIST_ADV_PSK_IV_SIZE];
+
+		if (p->key_tx.key_size > 0) {
+			uint32_t seq_nbe = htobe32(seq_rtp);
+			params.psk_mode = RIST_ADV_PSK_AES_CTR;
+			uint8_t old_nonce[4];
+			memcpy(old_nonce, p->key_tx.gre_nonce, 4);
+			_librist_crypto_psk_encrypt(&p->key_tx, seq_nbe, 1,
+			                            payload, enc_buf, payload_len);
+			if (p->key_tx.csprng_failed) {
+				rist_log_priv(ctx, RIST_LOG_ERROR,
+					"Advanced Profile: PSK encrypt failed (CSPRNG)\n");
+				return 0;
+			}
+			if (memcmp(old_nonce, p->key_tx.gre_nonce, 4) != 0)
+				rist_adv_send_psk_nonce(p, p->key_tx.gre_nonce,
+				                        (uint16_t)p->key_tx.key_size);
+			enc_payload = enc_buf;
+			params.psk_nonce = p->key_tx.gre_nonce;
+			memcpy(psk_iv_bytes, &seq_nbe, sizeof(seq_nbe));
+			params.psk_iv = psk_iv_bytes;
+		}
+
+		int total = rist_adv_build(adv_buf, &params, enc_payload, payload_len);
 		if (total < 0) {
 			rist_log_priv(ctx, RIST_LOG_ERROR, "Advanced Profile: failed to build packet\n");
 			return 0;
@@ -594,11 +627,54 @@ int rist_receiver_periodic_rtcp(struct rist_peer *peer) {
 	return rist_send_common_rtcp(peer, payload_type, &rtcp_buf[RIST_MAX_PAYLOAD_OFFSET], payload_len, 0, peer->local_port, peer->remote_port, 0, 0);
 }
 
+static int rist_receiver_send_nacks_advanced(struct rist_peer *peer, uint32_t seq_array[], size_t array_len)
+{
+	struct rist_common_ctx *ctx = get_cctx(peer);
+	uint32_t media_ssrc = rist_adv_ssrc_protected(ctx->adv_ssrc_base);
+
+	if (peer->receiver_ctx->nack_type == RIST_NACK_BITMASK) {
+		uint32_t pss = seq_array[0];
+		uint32_t blp = 0;
+		for (size_t i = 1; i < array_len; i++) {
+			uint32_t offset = seq_array[i] - pss;
+			if (offset >= 1 && offset <= 32) {
+				blp |= (1u << (offset - 1));
+			} else {
+				rist_adv_send_nack_bitmask(peer, media_ssrc, pss, blp);
+				pss = seq_array[i];
+				blp = 0;
+			}
+		}
+		rist_adv_send_nack_bitmask(peer, media_ssrc, pss, blp);
+	} else {
+		uint32_t pss = seq_array[0];
+		uint32_t nalp = 0;
+		for (size_t i = 1; i < array_len; i++) {
+			if (seq_array[i] == pss + nalp + 1) {
+				nalp++;
+			} else {
+				rist_adv_send_nack_range(peer, media_ssrc, pss, nalp);
+				pss = seq_array[i];
+				nalp = 0;
+			}
+		}
+		rist_adv_send_nack_range(peer, media_ssrc, pss, nalp);
+	}
+	return 0;
+}
+
 int rist_receiver_send_nacks(struct rist_peer *peer, uint32_t seq_array[], size_t array_len)
 {
 	if (get_cctx(peer)->debug && array_len > 0)
 		rist_log_priv(get_cctx(peer), RIST_LOG_DEBUG, "Sending %zu nacks starting with %"PRIu32"\n",
 		array_len, seq_array[0]);
+
+	if (get_cctx(peer)->profile == RIST_PROFILE_ADVANCED &&
+	    peer->is_advanced && peer->remote_supports_advanced &&
+	    array_len > 0) {
+		return rist_receiver_send_nacks_advanced(peer, seq_array, array_len);
+	}
+
 	uint8_t payload_type = RIST_PAYLOAD_TYPE_RTCP;
 	uint8_t *rtcp_buf = get_cctx(peer)->buf.rtcp;
 
@@ -606,23 +682,9 @@ int rist_receiver_send_nacks(struct rist_peer *peer, uint32_t seq_array[], size_
 	rist_rtcp_write_empty_rr(rtcp_buf, &payload_len, peer->adv_flow_id);
 	rist_rtcp_write_sdes(rtcp_buf, &payload_len, peer->cname, peer->adv_flow_id);
 	if (RIST_LIKELY(array_len > 0)) {
-		// Add nack requests (if any)
 		struct rist_rtp_nack_record *rec;
 		uint32_t fci_count = 1;
 
-		if (get_cctx(peer)->profile == RIST_PROFILE_ADVANCED) {
-			struct rist_rtcp_seqext *seqext = (struct rist_rtcp_seqext *)(rtcp_buf + RIST_MAX_PAYLOAD_OFFSET + payload_len);
-			seqext->flags = RTCP_NACK_SEQEXT_FLAGS;
-			seqext->ptype = PTYPE_NACK_CUSTOM;
-			seqext->len = htons(3);
-			seqext->ssrc = htobe32(peer->adv_flow_id);
-			memcpy(seqext->name, "RIST", 4);
-			seqext->seq_msb = htons((uint16_t)(seq_array[0] >> 16));
-			seqext->reserved0 = 0;
-			payload_len += sizeof(struct rist_rtcp_seqext);
-		}
-
-		// Now the NACK message
 		if (peer->receiver_ctx->nack_type == RIST_NACK_BITMASK)
 		{
 			struct rist_rtcp_nack_bitmask *rtcp = (struct rist_rtcp_nack_bitmask *)(rtcp_buf + RIST_MAX_PAYLOAD_OFFSET + payload_len);
@@ -927,8 +989,9 @@ peer_select:
 
 static size_t rist_sender_index_get(struct rist_sender *ctx, uint32_t seq)
 {
-	size_t idx = ctx->seq_index[(uint16_t)seq];
-	return idx;
+	if (ctx->common.profile == RIST_PROFILE_ADVANCED)
+		return ctx->seq_index[seq & (ctx->sender_queue_max - 1)];
+	return ctx->seq_index[(uint16_t)seq];
 }
 
 size_t rist_get_sender_retry_queue_size(struct rist_sender *ctx)

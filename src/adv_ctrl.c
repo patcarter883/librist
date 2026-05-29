@@ -14,6 +14,7 @@
 #include "transport-private.h"
 #include "log-private.h"
 #include "proto/rist_time.h"
+#include "crypto/psk.h"
 #include <string.h>
 #include <errno.h>
 
@@ -409,6 +410,98 @@ int rist_adv_send_unsupported(struct rist_peer *peer,
 }
 
 /* --------------------------------------------------------------------------
+ * Type 8 — GRE-over-Advanced Profile (Section 5.2, Type=8)
+ *
+ * Wraps a complete Main Profile GRE packet inside an Advanced Profile
+ * envelope.  The receiver strips the AP header and falls through to
+ * normal GRE processing.  This enables rist2rist relay/bridge devices
+ * and is used during Section 9 transition.
+ * -------------------------------------------------------------------------- */
+
+int rist_adv_send_type8(struct rist_peer *peer,
+                        const uint8_t *gre_packet, size_t gre_len)
+{
+	struct rist_common_ctx *ctx = get_cctx(peer);
+	uint8_t pkt[RIST_MAX_PACKET_SIZE + RIST_ADV_MAX_FIXED_HEADER];
+
+	if (gre_len > RIST_MAX_PACKET_SIZE)
+		return -1;
+
+	struct rist_adv_params params;
+	memset(&params, 0, sizeof(params));
+	params.seq = ctx->adv_seq_unprotected++;
+	params.timestamp = (uint32_t)((timestampNTP_u64() * 1000000ULL) >> 16);
+	params.ssrc = rist_adv_ssrc_unprotected(ctx->adv_ssrc_base);
+	params.enc_type = RIST_ADV_TYPE_GRE_MAIN;
+	params.psk_mode = RIST_ADV_PSK_NONE;
+	params.lpc_mode = RIST_ADV_LPC_NONE;
+	params.first_frag = true;
+	params.last_frag = true;
+	params.expedite = true;
+	params.retransmit = false;
+
+	int total = rist_adv_build(pkt, &params, gre_packet, gre_len);
+	if (total < 0)
+		return -1;
+
+	ssize_t ret = rist_transport_sendto(peer, pkt, (size_t)total, 0);
+	if (ret < 0)
+		_librist_log_send_error(peer, errno, (size_t)total, "adv-type8 sendto");
+
+	return (ret > 0) ? 0 : -1;
+}
+
+/* --------------------------------------------------------------------------
+ * PSK Future Nonce Announcement (CI=0x8011, Section 5.3.9)
+ *
+ * Body:
+ *   | Future Nonce (4 bytes) |
+ *   | Key Size (2 bytes) | Reserved (2 bytes) |
+ *
+ * Sent by the sender before rotating to a new nonce so the receiver
+ * can pre-derive the AES key (PBKDF2 is expensive) before the first
+ * data packet with the new nonce arrives.
+ * -------------------------------------------------------------------------- */
+
+int rist_adv_send_psk_nonce(struct rist_peer *peer,
+                            const uint8_t nonce[4], uint16_t key_size_bits)
+{
+	struct rist_common_ctx *ctx = get_cctx(peer);
+	uint8_t pkt[RIST_MAX_PACKET_SIZE];
+	uint8_t ctrl[4 + 8]; /* CI(2) + Len(2) + Nonce(4) + KeySize(2) + Rsvd(2) */
+	size_t off = 0;
+
+	ctrl[off++] = (RIST_ADV_CI_PSK_NONCE >> 8) & 0xFF;
+	ctrl[off++] = RIST_ADV_CI_PSK_NONCE & 0xFF;
+	uint16_t body_len = 8;
+	ctrl[off++] = (body_len >> 8) & 0xFF;
+	ctrl[off++] = body_len & 0xFF;
+
+	memcpy(&ctrl[off], nonce, 4);
+	off += 4;
+
+	ctrl[off++] = (key_size_bits >> 8) & 0xFF;
+	ctrl[off++] = key_size_bits & 0xFF;
+	ctrl[off++] = 0; /* Reserved */
+	ctrl[off++] = 0;
+
+	uint32_t seq = ctx->adv_seq_unprotected++;
+	uint64_t ntp = timestampNTP_u64();
+	uint32_t ts = (uint32_t)((ntp * 1000000ULL) >> 16);
+	uint32_t ssrc = rist_adv_ssrc_unprotected(ctx->adv_ssrc_base);
+
+	int total = rist_adv_build_control(pkt, seq, ts, ssrc, ctrl, off);
+	if (total < 0)
+		return -1;
+
+	ssize_t ret = rist_transport_sendto(peer, pkt, (size_t)total, 0);
+	if (ret < 0)
+		_librist_log_send_error(peer, errno, (size_t)total, "adv-psk-nonce sendto");
+
+	return (ret > 0) ? 0 : -1;
+}
+
+/* --------------------------------------------------------------------------
  * Control message receive dispatcher
  *
  * Called from the Advanced Profile receive path when enc_type == CONTROL.
@@ -515,6 +608,28 @@ int rist_adv_recv_control(struct rist_peer *peer,
 		rist_log_priv(ctx, RIST_LOG_DEBUG,
 			"Advanced Keep-Alive: caps=0x%08x (I=%d)\n",
 			caps, peer->remote_supports_advanced);
+		return 0;
+	}
+
+	case RIST_ADV_CI_PSK_NONCE: {
+		if (body_len < 8)
+			return -1;
+		uint8_t future_nonce[4];
+		memcpy(future_nonce, body, 4);
+		uint16_t key_bits = (uint16_t)((body[4] << 8) | body[5]);
+
+		bool odd = CHECK_BIT(future_nonce[0], 7);
+		struct rist_key *ak = odd ? &peer->key_rx_odd : &peer->key_rx;
+		if (ak->password_len > 0) {
+			pthread_mutex_lock(&peer->peer_lock);
+			_librist_crypto_psk_preannounce_nonce(ak, future_nonce, key_bits);
+			pthread_mutex_unlock(&peer->peer_lock);
+		}
+
+		rist_log_priv(ctx, RIST_LOG_DEBUG,
+			"Advanced PSK Future Nonce: nonce=0x%02x%02x%02x%02x key_bits=%u\n",
+			future_nonce[0], future_nonce[1], future_nonce[2], future_nonce[3],
+			key_bits);
 		return 0;
 	}
 

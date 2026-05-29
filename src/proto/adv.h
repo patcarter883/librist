@@ -478,6 +478,12 @@ RIST_PRIV int rist_adv_send_unsupported(struct rist_peer *peer,
                                          uint16_t incoming_ci,
                                          const uint8_t *incoming_payload,
                                          size_t incoming_len);
+RIST_PRIV int rist_adv_send_type8(struct rist_peer *peer,
+                                   const uint8_t *gre_packet,
+                                   size_t gre_len);
+RIST_PRIV int rist_adv_send_psk_nonce(struct rist_peer *peer,
+                                       const uint8_t nonce[4],
+                                       uint16_t key_size_bits);
 RIST_PRIV int rist_adv_recv_control(struct rist_peer *peer,
                                      const uint8_t *ctrl_payload,
                                      size_t ctrl_len);

@@ -83,9 +83,10 @@ struct rist_ctx *setup_rist_receiver(int profile, const char *url) {
     }
 #endif
     free((void *)peer_config);
-    if (check_flow_attr)
+    if (check_flow_attr) {
         rist_receiver_flow_attr_callback_set(ctx, flow_attr_callback, NULL);
-	if (rist_start(ctx) == -1) {
+    }
+    if (rist_start(ctx) == -1) {
 		rist_log(logging_settings_receiver, RIST_LOG_ERROR, "Could not start rist sender\n");
 		return NULL;
 	}

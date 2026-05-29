@@ -630,6 +630,9 @@ struct rist_peer {
 	struct rist_sender *sender_ctx;
 	struct rist_receiver *receiver_ctx;
 
+	/* Reflector role flags */
+	bool is_reflector_publisher;
+
 	/* rist buffer bloating counteract */
 	uint64_t cooldown_time;
 

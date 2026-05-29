@@ -1682,11 +1682,11 @@ static void rist_sender_recv_nack(struct rist_peer *peer,
 	assert(payload_len >= sizeof(struct rist_rtcp_hdr));
 
 	if (peer->receiver_mode) {
-		rist_log_priv(get_cctx(peer), RIST_LOG_ERROR,
+		rist_log_priv(get_cctx(peer), RIST_LOG_DEBUG,
 				"Received nack packet on receiver, ignoring ...\n");
 		return;
 	} else if (!peer->authenticated) {
-		rist_log_priv(get_cctx(peer), RIST_LOG_ERROR,
+		rist_log_priv(get_cctx(peer), RIST_LOG_DEBUG,
 				"Received nack packet but handshake is still pending, ignoring ...\n");
 		return;
 	}
@@ -2579,6 +2579,30 @@ static void rist_peer_recv(struct evsocket_ctx *evctx, int fd, short revents, vo
 
 	recv_bufsize = ret;
 
+	/* Transparent One-to-Many Reflector logic (run raw before decryption) */
+	if (peer->listening && !peer->multicast_receiver) {
+		struct rist_peer *p_sender = _librist_peer_match_peer_addr(peer, family, addr);
+		if (p_sender && p_sender->parent == peer) {
+			struct rist_peer *child = peer->child;
+			while (child) {
+				if (child != p_sender) {
+					if (p_sender->is_reflector_publisher) {
+						/* Forward publisher's packet (RTP/RTCP) to subscriber children */
+						if (!child->is_reflector_publisher) {
+							sendto(peer->sd, (const char *)recv_buf, recv_bufsize, 0, &child->u.address, child->address_len);
+						}
+					} else {
+						/* Forward subscriber's packet (NACK/RTCP) to publisher children */
+						if (child->is_reflector_publisher) {
+							sendto(peer->sd, (const char *)recv_buf, recv_bufsize, 0, &child->u.address, child->address_len);
+						}
+					}
+				}
+				child = child->sibling_next;
+			}
+		}
+	}
+
 	struct rist_key *k = &peer->key_rx;
 	uint32_t seq = 0;
 	uint32_t time_extension = 0;
@@ -3079,10 +3103,25 @@ protocol_bypass:
 			_librist_proto_gre_send_keepalive(p, p->rist_gre_version);
 			_librist_proto_gre_send_keepalive(p, p->rist_gre_version);
 			_librist_proto_gre_send_keepalive(p, p->rist_gre_version);
-			if (p->rist_gre_version >= 2 && p->sender_ctx != NULL) {
-				_librist_proto_gre_send_buffer_negotiation(p, peer->sender_ctx->sender_recover_min_time, 0);
-				_librist_proto_gre_send_buffer_negotiation(p, peer->sender_ctx->sender_recover_min_time, 0);
-				_librist_proto_gre_send_buffer_negotiation(p, peer->sender_ctx->sender_recover_min_time, 0);
+			if (p->rist_gre_version >= 2) {
+				uint16_t sender_max_buffer = 0;
+				if (p->sender_ctx != NULL) {
+					sender_max_buffer = p->sender_ctx->sender_recover_min_time;
+				} else if (peer->listening && !peer->multicast_receiver) {
+					struct rist_peer *child = peer->child;
+					while (child) {
+						if (child->is_reflector_publisher && child->sender_max_buffer_ticks > 0) {
+							sender_max_buffer = (uint16_t)(child->sender_max_buffer_ticks / RIST_CLOCK);
+							break;
+						}
+						child = child->sibling_next;
+					}
+				}
+				if (sender_max_buffer > 0) {
+					_librist_proto_gre_send_buffer_negotiation(p, sender_max_buffer, 0);
+					_librist_proto_gre_send_buffer_negotiation(p, sender_max_buffer, 0);
+					_librist_proto_gre_send_buffer_negotiation(p, sender_max_buffer, 0);
+				}
 			}
 		}
 		peer_append(p);
@@ -3097,10 +3136,25 @@ protocol_bypass:
 #endif
 	) {
 		//Our GRE version got upgraded, try kickstarting buffer negotiation
-		if (p->rist_gre_version == RIST_GRE_VERSION_MIN && p->sender_ctx != NULL) {
-			_librist_proto_gre_send_buffer_negotiation(p, peer->sender_ctx->sender_recover_min_time, 0);
-			_librist_proto_gre_send_buffer_negotiation(p, peer->sender_ctx->sender_recover_min_time, 0);
-			_librist_proto_gre_send_buffer_negotiation(p, peer->sender_ctx->sender_recover_min_time, 0);
+		if (p->rist_gre_version == RIST_GRE_VERSION_MIN) {
+			uint16_t sender_max_buffer = 0;
+			if (p->sender_ctx != NULL) {
+				sender_max_buffer = p->sender_ctx->sender_recover_min_time;
+			} else if (peer->listening && !peer->multicast_receiver) {
+				struct rist_peer *child = peer->child;
+				while (child) {
+					if (child->is_reflector_publisher && child->sender_max_buffer_ticks > 0) {
+						sender_max_buffer = (uint16_t)(child->sender_max_buffer_ticks / RIST_CLOCK);
+						break;
+					}
+					child = child->sibling_next;
+				}
+			}
+			if (sender_max_buffer > 0) {
+				_librist_proto_gre_send_buffer_negotiation(p, sender_max_buffer, 0);
+				_librist_proto_gre_send_buffer_negotiation(p, sender_max_buffer, 0);
+				_librist_proto_gre_send_buffer_negotiation(p, sender_max_buffer, 0);
+			}
 		}
 		p->rist_gre_version = rist_gre_version;
 	}
@@ -3164,12 +3218,24 @@ protocol_bypass:
 		if (_librist_proto_gre_parse_buffer_negotiation(p, &recv_buf[payload_offset], recv_bufsize - payload_offset, &sender_max_buffer, &client_current_buffer) != 0)
 			return;
 
+		p->is_reflector_publisher = sender_max_buffer != 0;
+
 		if (p->receiver_ctx != NULL && sender_max_buffer != 0) {
 			if (sender_max_buffer < p->config.recovery_length_min) {
 				rist_log_priv(get_cctx(peer), RIST_LOG_ERROR, "Sender max buffer %u smaller than min buffer %u, disabling buffer negotiation!\n", sender_max_buffer, p->config.recovery_length_min);
 				p->sender_max_buffer_ticks = 0;
-			} else
+			} else {
 				p->sender_max_buffer_ticks = sender_max_buffer * RIST_CLOCK;
+				if (peer->listening && !peer->multicast_receiver) {
+					struct rist_peer *child = peer->child;
+					while (child) {
+						if (child != p && !child->is_reflector_publisher && child->rist_gre_version >= 2) {
+							_librist_proto_gre_send_buffer_negotiation(child, sender_max_buffer, 0);
+						}
+						child = child->sibling_next;
+					}
+				}
+			}
 		}
 		return;
 	}
@@ -3327,7 +3393,7 @@ protocol_bypass:
 				source_time = convertRTPtoNTP(payload_type, time_extension, rtp_time);
 			seq = (uint32_t)be16toh(rtp->seq);
 			if (RIST_UNLIKELY(!p->receiver_mode))
-				rist_log_priv(get_cctx(peer), RIST_LOG_WARN,
+				rist_log_priv(get_cctx(peer), RIST_LOG_DEBUG,
 						"Received data packet on sender, ignoring (%d bytes)...\n", payload.size);
 			else {
 				size_t received_bytes = recv_bufsize - payload_offset; //use the unexpanded size to show real BW

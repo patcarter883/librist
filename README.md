@@ -29,6 +29,7 @@ The goal of this project is to provide a RIST library for **most platforms**.
   - Native control plane (Keep-Alive, RTT Echo, NACK Bitmask/Range)
   - Full 32-bit sequence numbering
   - PSK encryption (AES-CTR mode 1, per-packet Nonce/IV)
+  - SRP (Secure Remote Password) passphrase exchange
   - Future Nonce Announcement for zero-latency key rotation
   - Flow ID hierarchy (Outer/Inner/Sub) mapped to stream-id
   - LZ4 payload compression with automatic receiver detection
@@ -93,7 +94,7 @@ If you have an application that needs to operate outside the sweet spot describe
 
 ### Planned
 
-- VSF TR-06-3 (Advanced Profile) additional conformance levels (DTLS, SRP Auth, Fragmentation)
+- VSF TR-06-3 (Advanced Profile) additional conformance levels (DTLS, Fragmentation)
 
 # Tools
 

@@ -2646,6 +2646,15 @@ static void rist_peer_recv(struct evsocket_ctx *evctx, int fd, short revents, vo
 								}
 							}
 							peer_append(p);
+#if HAVE_SRP_SUPPORT
+							eap_clone_ctx(peer->eap_ctx, p);
+							{
+								char ip_buf[INET6_ADDRSTRLEN];
+								char *ip = get_ip_str(&p->u.address, ip_buf, INET6_ADDRSTRLEN);
+								if (ip)
+									eap_set_ip_string(p->eap_ctx, ip_buf);
+							}
+#endif
 						} else {
 							return;
 						}

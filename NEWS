@@ -10,8 +10,15 @@ Changes for 0.2.17 (pre-release):
 ---------------------------------
 
 ABI/API:
-  - ABI version 11:0:7 (soversion 4, binary-compatible with 0.2.15)
-  - API version 4.8.0 (new features, backwards-compatible)
+  - ABI version 12:0:8 (soversion 4, binary-compatible with 0.2.15)
+  - API version 4.9.0 (new features, backwards-compatible)
+  - RIST_STATS_VERSION bumped from 1 to 2 (new byte-counter fields
+    appended to rist_stats_sender_peer, rist_stats_receiver_peer,
+    and rist_stats_receiver_flow).
+  - RIST_STATS_JSON_SCHEMA_VERSION bumped from 2 to 3 (new fields:
+    sent_bytes, retransmitted_bytes, received_bytes).
+  - RIST_PEER_CONFIG_VERSION bumped from 1 to 2 (new fields:
+    multicast_ttl, multicast_source, local_port).
 
 New Features:
 
@@ -66,6 +73,32 @@ New Features:
     flow-id, lz4, lz4+encryption, flow-attr, SRP auth).
   - 187 unit tests (wire format, timestamp, seq_index, Type 8, PSK modes,
     Flow ID mapping, LZ4 roundtrip, flow-attr control roundtrip).
+
+  Per-byte statistics (#174):
+  - Sender stats now include sent_bytes and retransmitted_bytes counters
+    in both the C struct (rist_stats_sender_peer) and JSON output.
+  - Receiver flow stats now include received_bytes in the C struct
+    (rist_stats_receiver_flow) and JSON output.
+  - Per-peer receiver stats include received_bytes.
+
+  Multicast enhancements (#112):
+  - Configurable multicast TTL via ?ttl=N URL parameter (1-255).
+    New udpsocket_set_mcast_ttl() public API.
+  - IGMPv3 Source-Specific Multicast (SSM) support via ?source=IP
+    URL parameter.  Uses IP_ADD_SOURCE_MEMBERSHIP / MCAST_JOIN_SOURCE_GROUP.
+  - IPv6 multicast join support (previously only IPv4 was implemented).
+  - New udpsocket_open_bind_mcast() with TTL and SSM source parameters.
+  - udpsocket_join_mcast_group() now public API, supports IPv6 and SSM.
+
+  Configurable local port for caller peers (#158):
+  - New ?local-port=N URL parameter to bind caller (non-listening) peers
+    to a specific local UDP port instead of using an ephemeral port.
+  - New local_port field in rist_peer_config.
+
+  Deferred multicast join in ristsender (#85):
+  - When ristsender's input URL is a multicast address, the IGMP join
+    is now deferred until the first RIST peer handshake completes.
+    Prevents receiving multicast traffic before the output path is ready.
 
   WebAssembly / Emscripten:
   - TUN device stubs for Emscripten targets.

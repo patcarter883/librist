@@ -161,6 +161,9 @@ struct rist_peer_flow_stats {
 	uint64_t cur_ips;
 	uint32_t avg_count;
 	uint64_t total_ips;
+
+	/* Per-byte counters */
+	uint64_t received_bytes;
 };
 
 struct rist_peer_sender_stats {
@@ -171,6 +174,8 @@ struct rist_peer_sender_stats {
 	uint32_t bandwidth_skip;
 	uint32_t retrans_skip;
 	uint64_t ts_null;
+	uint64_t sent_bytes;
+	uint64_t retransmitted_bytes;
 };
 
 struct rist_peer_receiver_stats {
@@ -178,6 +183,7 @@ struct rist_peer_receiver_stats {
 	uint32_t received_rtcp;
 	uint64_t received;
 	uint64_t ts_null;
+	uint64_t received_bytes;
 };
 
 struct nacks {

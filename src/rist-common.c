@@ -765,6 +765,7 @@ static int receiver_enqueue(struct rist_peer *peer, uint64_t source_time, uint64
 	if (out_of_order)
 		f->stats_instant.reordered++;
 	f->stats_instant.received++;
+	f->stats_instant.received_bytes += (uint64_t)len;
 	pthread_mutex_unlock(&(get_cctx(peer)->stats_lock));
 	// Check for missing data and queue retries
 	if (!retry) {
@@ -2044,6 +2045,7 @@ static void rist_receiver_recv_data(struct rist_peer *peer, uint32_t seq, uint32
 	/* * * * * * * * * * * * * * * * * * * */
 	/**************** WIP *****************/
 	peer->stats_receiver_instant.received++;
+	peer->stats_receiver_instant.received_bytes += (uint64_t)ingest_size;
 
 	uint64_t rtt;
 	rtt = peer->eight_times_rtt / 8;

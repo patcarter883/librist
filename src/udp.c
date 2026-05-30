@@ -185,6 +185,7 @@ size_t rist_send_seq_rtcp(struct rist_peer *p, uint32_t seq_rtp, uint8_t payload
 adv_out:
 		if (ret > 0) {
 			p->stats_sender_instant.sent++;
+			p->stats_sender_instant.sent_bytes += (uint64_t)ret;
 			if (ts_null_bytes)
 				p->stats_sender_instant.ts_null++;
 			p->stats_receiver_instant.sent_rtcp++;
@@ -289,6 +290,7 @@ out:
 		rist_log_priv(ctx, RIST_LOG_ERROR, "\tSend failed: errno=%d, ret=%d, socket=%d\n", errno, ret, p->sd);
 	} else if (ret > 0) {
 		p->stats_sender_instant.sent++;
+		p->stats_sender_instant.sent_bytes += (uint64_t)ret;
 		if (ts_null_bytes)
 			p->stats_sender_instant.ts_null++;
 		p->stats_receiver_instant.sent_rtcp++;
@@ -1154,10 +1156,13 @@ ssize_t rist_retry_dequeue(struct rist_sender *ctx)
 	}
 
 	buffer->transmit_count++;
-	if (retry->peer->peer_data)
+	if (retry->peer->peer_data) {
 		retry->peer->peer_data->stats_sender_instant.retrans++;
-	else
+		retry->peer->peer_data->stats_sender_instant.retransmitted_bytes += (uint64_t)ret;
+	} else {
 		retry->peer->stats_sender_instant.retrans++;
+		retry->peer->stats_sender_instant.retransmitted_bytes += (uint64_t)ret;
+	}
 	return ret;
 }
 

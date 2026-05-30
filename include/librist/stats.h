@@ -32,6 +32,10 @@ struct rist_stats_sender_peer
 	double quality;
 	/* current RTT */
 	uint32_t rtt;
+	/* total bytes sent (payload + overhead) */
+	uint64_t sent_bytes;
+	/* total bytes retransmitted */
+	uint64_t retransmitted_bytes;
 };
 
 struct rist_stats_receiver_peer
@@ -52,6 +56,8 @@ struct rist_stats_receiver_peer
 	size_t bandwidth;
 	/* average bandwidth */
 	size_t avg_bandwidth;
+	/* total data bytes received from this peer */
+	uint64_t received_bytes;
 };
 
 struct rist_stats_receiver_flow
@@ -94,6 +100,8 @@ struct rist_stats_receiver_flow
 	struct rist_stats_receiver_peer *peers;
 	/* average buffer duration in microseconds (dynamic RIST receiver buffer fill level) */
 	uint64_t avg_buffer_time;
+	/* total data bytes received (payload only, excluding headers) */
+	uint64_t received_bytes;
 };
 
 enum rist_stats_type
@@ -102,7 +110,7 @@ enum rist_stats_type
 	RIST_STATS_RECEIVER_FLOW
 };
 
-#define RIST_STATS_VERSION (1)
+#define RIST_STATS_VERSION (2)
 #define RIST_SENDER_STATS_VERSION (0)
 
 struct rist_stats

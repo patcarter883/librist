@@ -77,7 +77,7 @@ enum librist_merge_mode
 	LIBRIST_MERGE_MODE_AUTO  = 2,
 };
 
-#define RIST_PEER_CONFIG_VERSION (1)
+#define RIST_PEER_CONFIG_VERSION (2)
 
 struct rist_peer_config
 {
@@ -155,6 +155,12 @@ struct rist_peer_config
 	 * For high fan-out, lossy last-mile, or per-subscriber buffer
 	 * tuning, use rist2rist instead. */
 	int reflector;
+
+	/* Multicast TTL / hop limit (0 = platform default, typically 1) */
+	uint32_t multicast_ttl;
+
+	/* SSM source address for IGMPv3 source-specific multicast (empty = ASM) */
+	char multicast_source[RIST_MAX_STRING_LONG];
 };
 
 /**

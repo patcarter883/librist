@@ -95,6 +95,12 @@ int parse_url_udp_options(const char* url, struct rist_udp_config *output_udp_co
 
 			if (strcmp( url_params[i].key, RIST_URL_PARAM_MIFACE ) == 0) {
 				strncpy((void *)output_udp_config->miface, val, RIST_MAX_STRING_SHORT - 1);
+			} else if (strcmp(url_params[i].key, RIST_URL_PARAM_MCAST_TTL) == 0) {
+				int temp = atoi(val);
+				if (temp > 0 && temp <= 255)
+					output_udp_config->multicast_ttl = (uint32_t)temp;
+			} else if (strcmp(url_params[i].key, RIST_URL_PARAM_MCAST_SOURCE) == 0) {
+				strncpy((void *)output_udp_config->multicast_source, val, RIST_MAX_STRING_LONG - 1);
 			} else if (strcmp( url_params[i].key, RIST_URL_PARAM_STREAM_ID ) == 0) {
 				int temp = atoi( val );
 				if (temp > 0)
@@ -173,6 +179,12 @@ int parse_url_options(const char* url, struct rist_peer_config *output_peer_conf
 					output_peer_config->recovery_length_max = temp;
 			} else if (strcmp( url_params[i].key, RIST_URL_PARAM_MIFACE ) == 0) {
 				strncpy((void *)output_peer_config->miface, val, 128-1);
+			} else if (strcmp(url_params[i].key, RIST_URL_PARAM_MCAST_TTL) == 0) {
+				int temp = atoi(val);
+				if (temp > 0 && temp <= 255)
+					output_peer_config->multicast_ttl = (uint32_t)temp;
+			} else if (strcmp(url_params[i].key, RIST_URL_PARAM_MCAST_SOURCE) == 0) {
+				strncpy((void *)output_peer_config->multicast_source, val, RIST_MAX_STRING_LONG - 1);
 			} else if (strcmp( url_params[i].key, RIST_URL_PARAM_SECRET ) == 0) {
 				strncpy((void *)output_peer_config->secret, val, 128-1);
 			} else if (strcmp( url_params[i].key, RIST_URL_PARAM_SRP_USERNAME) == 0) {
@@ -2479,6 +2491,9 @@ static void peer_copy_settings(struct rist_peer *peer_src, struct rist_peer *pee
 	peer->config.max_retries = peer_src->config.max_retries;
 	peer->config.timing_mode = peer_src->config.timing_mode;
 	peer->config.reflector = peer_src->config.reflector;
+	peer->config.multicast_ttl = peer_src->config.multicast_ttl;
+	strncpy(peer->config.multicast_source, peer_src->config.multicast_source, RIST_MAX_STRING_LONG - 1);
+	peer->config.multicast_source[RIST_MAX_STRING_LONG - 1] = '\0';
 	peer->rtcp_keepalive_interval = peer_src->rtcp_keepalive_interval;
 	peer->peer_ssrc = peer_src->peer_ssrc;
 	peer->session_timeout = peer_src->session_timeout;

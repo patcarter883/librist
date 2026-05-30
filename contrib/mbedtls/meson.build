@@ -113,6 +113,7 @@ if builtin_mbedtls and not mbedcrypto_lib_found
         '-Wno-incompatible-pointer-types',
         '-Wno-shadow', '-Wno-unused-parameter',
         '-Wno-pedantic',
+        '-Wno-unguarded-availability',
     ])
     my_mbedcrypto_lib = static_library('mbedcrypto',
         mbedcrypto_src,

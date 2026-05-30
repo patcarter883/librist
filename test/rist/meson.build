@@ -99,6 +99,14 @@ test('Advanced profile LZ4 compression client mode', test_send_receive, args: ['
 test('Advanced profile LZ4 compression + 10% loss', test_send_receive, args: ['2', 'rist://@127.0.0.1:7052', 'rist://127.0.0.1:7052?compression=1', '10'],suite: ['advanced', 'unicast', 'server', 'lz4'])
 test('Advanced profile LZ4 + AES128 server mode', test_send_receive, args: ['2', 'rist://@127.0.0.1:7053?secret=12345678&aes-type=128', 'rist://127.0.0.1:7053?secret=12345678&aes-type=128&compression=1', '0'],suite: ['advanced', 'unicast', 'server', 'lz4', 'encryption'])
 
+###SRP authentication (Advanced Profile)
+if have_srp
+	test('Advanced profile SRP auth server mode AES128', test_send_receive, args: ['2', 'rist://@127.0.0.1:7070?secret=12345678&aes-type=128&username=testuser&password=testpassword', 'rist://127.0.0.1:7070?secret=12345678&aes-type=128&username=testuser&password=testpassword', '0'],suite: ['advanced', 'unicast', 'server', 'encryption', 'srp'], should_fail: false)
+	test('Advanced profile SRP auth client mode AES128', test_send_receive, args: ['2', 'rist://127.0.0.1:7071?secret=12345678&aes-type=128&username=testuser&password=testpassword', 'rist://@127.0.0.1:7071?secret=12345678&aes-type=128&username=testuser&password=testpassword', '0'],suite: ['advanced', 'unicast', 'client', 'encryption', 'srp'], should_fail: false)
+	test('Advanced profile SRP auth client no SRP (should fail)', test_send_receive, args: ['2', 'rist://127.0.0.1:7072?secret=12345678&aes-type=128', 'rist://@127.0.0.1:7072?secret=12345678&aes-type=128&username=testuser&password=testpassword', '0'], suite: ['advanced', 'unicast', 'server', 'encryption', 'srp'], should_fail: true)
+	test('Advanced profile SRP auth password mismatch (should fail)', test_send_receive, args: ['2', 'rist://127.0.0.1:7073?secret=12345678&aes-type=128&username=testuser&password=wrongpassword', 'rist://@127.0.0.1:7073?secret=12345678&aes-type=128&username=testuser&password=testpassword', '0'],suite: ['advanced', 'unicast', 'server', 'encryption', 'srp'], should_fail: true)
+endif
+
 #Encryption tests where 1 side has enabled encryption these should fail
 test('Main profile encryption receive server mode unencrypted, sender client mode', test_send_receive, args: ['1', 'rist://@127.0.0.1:6003', 'rist://127.0.0.1:6003?secret=12345678&aes-type=128', '0'], should_fail: true)
 test('Main profile encryption receive server mode, sender client mode unencrypted', test_send_receive, args: ['1', 'rist://@127.0.0.1:6004?secret=12345678&aes-type=128', 'rist://127.0.0.1:6004', '0'], should_fail: true)

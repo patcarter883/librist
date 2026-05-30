@@ -4,7 +4,7 @@
 
 A library that can be used to easily add the RIST protocol to your application.
 
-This code was written to comply with the Video Services Forum (VSF) Technical Recommendations TR-06-1 and TR-06-2. The protocol goes by the codename "RIST"
+This code was written to comply with the Video Services Forum (VSF) Technical Recommendations TR-06-1, TR-06-2, and TR-06-3. The protocol goes by the codename "RIST"
 
 The canonical repository URL for this repo is https://code.videolan.org/rist/librist
 
@@ -25,9 +25,20 @@ The goal of this project is to provide a RIST library for **most platforms**.
   - One-to-many distribution (media server mode)
   - Multiplexing and TUN interface support
   - Null packet deletion/suppression
+- **VSF TR-06-3** (Advanced Profile) - Baseline.Direct conformance including:
+  - Native control plane (Keep-Alive, RTT Echo, NACK Bitmask/Range)
+  - Full 32-bit sequence numbering
+  - PSK encryption (AES-CTR mode 1, per-packet Nonce/IV)
+  - Future Nonce Announcement for zero-latency key rotation
+  - Flow ID hierarchy (Outer/Inner/Sub) mapped to stream-id
+  - LZ4 payload compression with automatic receiver detection
+  - Flow Attribute messages (periodic JSON session metadata)
+  - Type 8 GRE-over-AP encapsulation for Section 9 interoperability
 
 ### Additional Features
 
+- Pluggable transport abstraction for non-POSIX platforms (WebAssembly, userspace stacks)
+- Packet Split/Merge for payloads exceeding path MTU
 - YAML configuration file support for ristsender/ristreceiver
 - Prometheus metrics exporter with OpenMetrics format
 - MPEG-TS null packet suppression byte tracking
@@ -52,10 +63,10 @@ The reasoning behind this decision is the same as for libvorbis, see [RMS on vor
 - Buffer sizes from 50 ms to 30 seconds
 - Networks with round trip times from 0ms to 5000ms
 - Bitrates from 0 to 1 Gbps
-- Packet size should be kept under the path's MTU (typically 1500). The library does not support packet fragmentation.
+- Packet size should be kept under the path's MTU (typically 1500). Payloads exceeding the MTU can be handled with the built-in split/merge feature (`?split=auto`).
 - Bi-directional communication available (not one-way systems like satellite)
 
-If you have an application that needs to operate outside the sweet spot described above, you will need to modify some constants in the rist-private.h header and/or use some of the more obscure API calls to fine tune the library for your use case. The library can overcome all the limitations above by fine-tuning with the exception of packet fragmentation which will be addressed as a feature enhancement in the future.
+If you have an application that needs to operate outside the sweet spot described above, you will need to modify some constants in the rist-private.h header and/or use some of the more obscure API calls to fine tune the library for your use case.
 
 # Roadmap
 
@@ -65,9 +76,13 @@ If you have an application that needs to operate outside the sweet spot describe
 - Stable and documented public API
 - VSF TR-06-1 (Simple Profile) full compliance
 - VSF TR-06-2 (Main Profile) full compliance
-- Cross-platform support (Linux, macOS, Windows, FreeBSD)
+- VSF TR-06-3 (Advanced Profile) Baseline.Direct conformance
+- Cross-platform support (Linux, macOS, Windows, FreeBSD, WebAssembly)
 - PSK encryption and SRP passphrase exchange
 - Multipath and multiplexing support
+- Pluggable transport abstraction
+- Packet Split/Merge
+- LZ4 payload compression
 - Prometheus metrics integration
 
 ### In Progress
@@ -78,8 +93,7 @@ If you have an application that needs to operate outside the sweet spot describe
 
 ### Planned
 
-- VSF TR-06-4 Part 4 - Decoder Synchronization API
-- VSF TR-06-2 (Advanced Profile)
+- VSF TR-06-3 (Advanced Profile) additional conformance levels (DTLS, SRP Auth, Fragmentation)
 
 # Tools
 
@@ -90,6 +104,7 @@ The library includes several command-line utilities:
 - **rist2rist** - RIST relay/proxy application
 - **udp2udp** - UDP relay application
 - **risttunnel** - Point-to-point IP tunnel over RIST (bidirectional, ARQ, crypto)
+- **ristsrppasswd** - Generate SRP verifier lines for authentication
 - **prometheus-exporter** - Prometheus metrics endpoint (when built with libmicrohttpd)
 
 All tools support YAML configuration files for easier deployment.
@@ -178,7 +193,7 @@ Here is a table of comparison of the two protocols:
 
 ## What about the packet recovery patents?
 
-- This code was written to comply with the Video Services Forum (VSF) Technical Recommendations TR-06-1 and TR-06-2 and as such is free of any patent royalty payments
+- This code was written to comply with the Video Services Forum (VSF) Technical Recommendations TR-06-1, TR-06-2, and TR-06-3 and as such is free of any patent royalty payments
 
 ## Will you care about <my_arch>? <my_os>?
 

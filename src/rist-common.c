@@ -292,6 +292,10 @@ int parse_url_options(const char* url, struct rist_peer_config *output_peer_conf
 				int temp = atoi( val );
 				if (temp >= 0 && temp <= 1)
 					output_peer_config->reflector = temp;
+			} else if (strcmp( url_params[i].key, RIST_URL_PARAM_LOCAL_PORT ) == 0) {
+				int temp = atoi( val );
+				if (temp > 0 && temp <= 65535)
+					output_peer_config->local_port = (uint16_t)temp;
 			} else {
 				ret = -1;
 				fprintf(stderr, "Unknown or invalid parameter %s\n", url_params[i].key);
@@ -2496,6 +2500,7 @@ static void peer_copy_settings(struct rist_peer *peer_src, struct rist_peer *pee
 	peer->config.multicast_ttl = peer_src->config.multicast_ttl;
 	strncpy(peer->config.multicast_source, peer_src->config.multicast_source, RIST_MAX_STRING_LONG - 1);
 	peer->config.multicast_source[RIST_MAX_STRING_LONG - 1] = '\0';
+	peer->config.local_port = peer_src->config.local_port;
 	peer->rtcp_keepalive_interval = peer_src->rtcp_keepalive_interval;
 	peer->peer_ssrc = peer_src->peer_ssrc;
 	peer->session_timeout = peer_src->session_timeout;

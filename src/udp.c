@@ -498,7 +498,8 @@ void rist_create_socket(struct rist_peer *peer)
 			peer->multicast_receiver = IN6_IS_ADDR_MULTICAST(&addrv6->sin6_addr);
 		}
 
-		peer->sd = udpsocket_open_bind(host, port, peer->miface);
+		peer->sd = udpsocket_open_bind_mcast(host, port, peer->miface,
+			peer->config.multicast_ttl, peer->config.multicast_source);
 		if (peer->sd >= 0) {
 			if (port == 0)
 			{
@@ -544,7 +545,6 @@ void rist_create_socket(struct rist_peer *peer)
 		}
 		// We use sendto ... so, no need to connect directly here
 		peer->sd = udpsocket_open(peer->address_family);
-		// TODO : set max hops
 		if (peer->sd >= 0)
 			rist_log_priv(get_cctx(peer), RIST_LOG_INFO, "Starting in URL connect mode (%d)\n", peer->sd);
 		else {
@@ -593,6 +593,8 @@ void rist_create_socket(struct rist_peer *peer)
 			}
 #endif
 		}
+		if (peer->multicast_sender && peer->config.multicast_ttl > 0)
+			udpsocket_set_mcast_ttl(peer->sd, peer->address_family, peer->config.multicast_ttl);
 		udpsocket_set_dontfragment(peer->sd, peer->address_family);
 		peer->local_port = 32768 + (get_cctx(peer)->peer_counter % 28232);
 #ifdef _WIN32

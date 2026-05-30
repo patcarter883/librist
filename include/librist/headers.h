@@ -108,6 +108,10 @@ struct rist_udp_config
 	uint16_t stream_id;
 	enum librist_multiplex_mode multiplex_mode;
 	char multiplex_filter[RIST_MAX_STRING_SHORT];//Future usage
+	/* Multicast TTL / hop limit (0 = platform default) */
+	uint32_t multicast_ttl;
+	/* SSM source address for IGMPv3 source-specific multicast (empty = ASM) */
+	char multicast_source[RIST_MAX_STRING_LONG];
 };
 
 #ifdef __cplusplus

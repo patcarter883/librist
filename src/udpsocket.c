@@ -14,6 +14,9 @@
 #ifndef MCAST_JOIN_GROUP
 #define MCAST_JOIN_GROUP 41
 #endif
+#ifndef MCAST_JOIN_SOURCE_GROUP
+#define MCAST_JOIN_SOURCE_GROUP 45
+#endif
 /* SIO_UDP_CONNRESET lives in mstcpip.h but some MinGW SDKs are stale; the
  * IOCTL code itself is stable (XP+). Provide a fallback definition. */
 #ifndef SIO_UDP_CONNRESET
@@ -173,6 +176,42 @@ void udpsocket_set_dontfragment(int sd, uint16_t af)
 #else
 	(void)sd; (void)af;
 #endif
+}
+
+int udpsocket_set_mcast_ttl(int sd, uint16_t af, uint32_t ttl)
+{
+	if (ttl == 0)
+		return 0;
+	if (af == AF_INET6) {
+#ifdef IPV6_MULTICAST_HOPS
+		int hops = (int)ttl;
+		if (setsockopt(sd, IPPROTO_IPV6, IPV6_MULTICAST_HOPS, (const char *)&hops, sizeof(hops)) < 0) {
+#ifdef _WIN32
+			rist_log_priv3(RIST_LOG_WARN, "setsockopt(IPV6_MULTICAST_HOPS) failed: WSAGetLastError=%d\n", WSAGetLastError());
+#else
+			rist_log_priv3(RIST_LOG_WARN, "setsockopt(IPV6_MULTICAST_HOPS) failed: %s\n", strerror(errno));
+#endif
+			return -1;
+		}
+#else
+		(void)sd; (void)ttl;
+#endif
+	} else {
+#ifdef IP_MULTICAST_TTL
+		int val = (int)ttl;
+		if (setsockopt(sd, IPPROTO_IP, IP_MULTICAST_TTL, (const char *)&val, sizeof(val)) < 0) {
+#ifdef _WIN32
+			rist_log_priv3(RIST_LOG_WARN, "setsockopt(IP_MULTICAST_TTL) failed: WSAGetLastError=%d\n", WSAGetLastError());
+#else
+			rist_log_priv3(RIST_LOG_WARN, "setsockopt(IP_MULTICAST_TTL) failed: %s\n", strerror(errno));
+#endif
+			return -1;
+		}
+#else
+		(void)sd; (void)ttl;
+#endif
+	}
+	return 0;
 }
 
 int udpsocket_open(uint16_t af)
@@ -337,32 +376,95 @@ bool is_ip_address(const char *ipaddress, int family) {
 	return inet_pton(family, ipaddress, &buf) == 1;
 }
 
-int udpsocket_join_mcast_group(int sd, const char* miface, struct sockaddr* sa, uint16_t family) {
-	if (family != AF_INET)
-		return -1;
-	char address[INET6_ADDRSTRLEN];
+int udpsocket_join_mcast_group(int sd, const char* miface, struct sockaddr* sa, uint16_t family, const char *ssm_source) {
 	char mcastaddress[INET6_ADDRSTRLEN];
-	struct sockaddr_in *mcast_v4 = (struct sockaddr_in *)sa;
-	inet_ntop(AF_INET, &(mcast_v4->sin_addr), mcastaddress, INET_ADDRSTRLEN);
 	uint32_t src_addr = htonl(INADDR_ANY);
 	int ifindex = 0;
 
-	if (is_ip_address(miface, AF_INET))	{
-		inet_pton(AF_INET, miface, &src_addr);
-	} else if (miface != NULL && miface[0] != '\0') {
+	if (miface != NULL && miface[0] != '\0') {
+		if (is_ip_address(miface, AF_INET)) {
+			inet_pton(AF_INET, miface, &src_addr);
+		} else {
 #ifndef _WIN32
-		ifindex = if_nametoindex(miface);
+			ifindex = if_nametoindex(miface);
 #else
-		ifindex = atoi(miface);
+			ifindex = atoi(miface);
 #endif
-		if (!ifindex) {
-			rist_log_priv3(RIST_LOG_ERROR, "Failed to get interface index error: %s\n", strerror(errno));
-			rist_log_priv3(RIST_LOG_INFO, "Falling back to joining via default route\n");
+			if (!ifindex) {
+				rist_log_priv3(RIST_LOG_ERROR, "Failed to get interface index error: %s\n", strerror(errno));
+				rist_log_priv3(RIST_LOG_INFO, "Falling back to joining via default route\n");
+			}
 		}
 	}
+
+	if (family == AF_INET6) {
+		struct sockaddr_in6 *mcast_v6 = (struct sockaddr_in6 *)sa;
+		inet_ntop(AF_INET6, &mcast_v6->sin6_addr, mcastaddress, INET6_ADDRSTRLEN);
+#ifdef MCAST_JOIN_GROUP
+		struct group_req gr;
+		memset(&gr, 0, sizeof(gr));
+		gr.gr_interface = ifindex;
+		memcpy(&gr.gr_group, sa, sizeof(struct sockaddr_in6));
+		rist_log_priv3(RIST_LOG_INFO, "Joining IPv6 multicast address: %s\n", mcastaddress);
+		if (setsockopt(sd, IPPROTO_IPV6, MCAST_JOIN_GROUP, (const char *)&gr, sizeof(gr)) == 0)
+			return 0;
+#endif
+#ifdef IPV6_JOIN_GROUP
+		{
+			struct ipv6_mreq mreq6;
+			memcpy(&mreq6.ipv6mr_multiaddr, &mcast_v6->sin6_addr, sizeof(mreq6.ipv6mr_multiaddr));
+			mreq6.ipv6mr_interface = ifindex;
+			if (setsockopt(sd, IPPROTO_IPV6, IPV6_JOIN_GROUP, (const char *)&mreq6, sizeof(mreq6)) < 0) {
+#ifdef _WIN32
+				rist_log_priv3(RIST_LOG_ERROR, "Failed to join IPv6 multicast group: WSAGetLastError=%d\n", WSAGetLastError());
+#else
+				rist_log_priv3(RIST_LOG_ERROR, "Failed to join IPv6 multicast group: %s\n", strerror(errno));
+#endif
+				return -1;
+			}
+			return 0;
+		}
+#endif
+		rist_log_priv3(RIST_LOG_ERROR, "IPv6 multicast join not supported on this platform\n");
+		return -1;
+	}
+
+	/* IPv4 path */
+	struct sockaddr_in *mcast_v4 = (struct sockaddr_in *)sa;
+	inet_ntop(AF_INET, &(mcast_v4->sin_addr), mcastaddress, INET_ADDRSTRLEN);
+
+	/* SSM (source-specific multicast) when ssm_source is provided */
+	if (ssm_source != NULL && ssm_source[0] != '\0') {
+#ifdef IP_ADD_SOURCE_MEMBERSHIP
+		struct ip_mreq_source mreqs;
+		memset(&mreqs, 0, sizeof(mreqs));
+		mreqs.imr_multiaddr = mcast_v4->sin_addr;
+		mreqs.imr_interface.s_addr = src_addr;
+		if (inet_pton(AF_INET, ssm_source, &mreqs.imr_sourceaddr) != 1) {
+			rist_log_priv3(RIST_LOG_ERROR, "Invalid SSM source address: %s\n", ssm_source);
+			return -1;
+		}
+		rist_log_priv3(RIST_LOG_INFO, "SSM join: group %s source %s\n", mcastaddress, ssm_source);
+		if (setsockopt(sd, IPPROTO_IP, IP_ADD_SOURCE_MEMBERSHIP, (const char *)&mreqs, sizeof(mreqs)) < 0) {
+#ifdef _WIN32
+			rist_log_priv3(RIST_LOG_ERROR, "Failed to join SSM group (IP_ADD_SOURCE_MEMBERSHIP): WSAGetLastError=%d\n", WSAGetLastError());
+#else
+			rist_log_priv3(RIST_LOG_ERROR, "Failed to join SSM group (IP_ADD_SOURCE_MEMBERSHIP): %s\n", strerror(errno));
+#endif
+			return -1;
+		}
+		return 0;
+#else
+		rist_log_priv3(RIST_LOG_ERROR, "SSM (source-specific multicast) not supported on this platform\n");
+		return -1;
+#endif
+	}
+
+	/* ASM (any-source multicast) */
 #ifdef MCAST_JOIN_GROUP
 	if (ifindex) {
 		struct group_req gr;
+		memset(&gr, 0, sizeof(gr));
 		gr.gr_interface = ifindex;
 		memcpy(&gr.gr_group, mcast_v4, sizeof(*mcast_v4));
 		rist_log_priv3(RIST_LOG_INFO, "Joining multicast address: %s with %s\n", mcastaddress, miface);
@@ -371,19 +473,19 @@ int udpsocket_join_mcast_group(int sd, const char* miface, struct sockaddr* sa, 
 		}
 	}
 #endif
-	inet_ntop(AF_INET, &(src_addr), address, INET_ADDRSTRLEN);
-	rist_log_priv3(RIST_LOG_INFO, "Joining multicast address: %s from IP %s\n", mcastaddress, address);
+	{
+		char address[INET6_ADDRSTRLEN];
+		inet_ntop(AF_INET, &(src_addr), address, INET_ADDRSTRLEN);
+		rist_log_priv3(RIST_LOG_INFO, "Joining multicast address: %s from IP %s\n", mcastaddress, address);
+	}
 	struct ip_mreq group;
 	group.imr_multiaddr.s_addr = mcast_v4->sin_addr.s_addr;
 	group.imr_interface.s_addr = src_addr;
 	if (setsockopt(sd, IPPROTO_IP, IP_ADD_MEMBERSHIP, (char *)&group, sizeof(group)) < 0) {
-		rist_log_priv3( RIST_LOG_ERROR, "Failed to join multicast group\n");
-		goto fail;
+		rist_log_priv3(RIST_LOG_ERROR, "Failed to join multicast group\n");
+		return -1;
 	}
 	return 0;
-
-fail:
-	return -1;
 }
 
 int udpsocket_open_connect(const char *host, uint16_t port, const char *mciface)
@@ -449,7 +551,8 @@ int udpsocket_open_connect(const char *host, uint16_t port, const char *mciface)
 	return sd;
 }
 
-int udpsocket_open_bind(const char *host, uint16_t port, const char *mciface)
+int udpsocket_open_bind_mcast(const char *host, uint16_t port, const char *mciface,
+                               uint32_t ttl, const char *ssm_source)
 {
 	int sd;
 	struct sockaddr_in6 raw;
@@ -471,29 +574,37 @@ int udpsocket_open_bind(const char *host, uint16_t port, const char *mciface)
 		is_multicast = IN_MULTICAST(ntohl(tmp->sin_addr.s_addr));
 	}
 	if (setsockopt(sd, SOL_SOCKET, SO_REUSEADDR, (char *)&yes, sizeof(int)) < 0) {
-		/* Non-critical error */
 #ifdef _WIN32
-		rist_log_priv3( RIST_LOG_ERROR, "Cannot set SO_REUSEADDR: WSAGetLastError=%d\n", WSAGetLastError());
+		rist_log_priv3(RIST_LOG_ERROR, "Cannot set SO_REUSEADDR: WSAGetLastError=%d\n", WSAGetLastError());
 #else
-		rist_log_priv3( RIST_LOG_ERROR, "Cannot set SO_REUSEADDR: %s\n", strerror(errno));
+		rist_log_priv3(RIST_LOG_ERROR, "Cannot set SO_REUSEADDR: %s\n", strerror(errno));
 #endif
 	}
-	if (bind(sd, (struct sockaddr *)&raw, addrlen) < 0)	{
+	if (bind(sd, (struct sockaddr *)&raw, addrlen) < 0) {
 #ifdef _WIN32
-		rist_log_priv3( RIST_LOG_ERROR, "Could not bind to interface: WSAGetLastError=%d\n", WSAGetLastError());
+		rist_log_priv3(RIST_LOG_ERROR, "Could not bind to interface: WSAGetLastError=%d\n", WSAGetLastError());
 #else
-		rist_log_priv3( RIST_LOG_ERROR, "Could not bind to interface: %s\n", strerror(errno));
+		rist_log_priv3(RIST_LOG_ERROR, "Could not bind to interface: %s\n", strerror(errno));
 #endif
 		udpsocket_close(sd);
 		return -1;
 	}
 	udpsocket_set_dontfragment(sd, raw.sin6_family);
-	if (is_multicast && udpsocket_join_mcast_group(sd, mciface, (struct sockaddr *)&raw, raw.sin6_family) != 0) {
-		rist_log_priv3( RIST_LOG_ERROR, "Could not join multicast group: %s on %s\n", host, mciface);
-		udpsocket_close(sd);
-		return -1;
+	if (is_multicast) {
+		if (ttl > 0)
+			udpsocket_set_mcast_ttl(sd, raw.sin6_family, ttl);
+		if (udpsocket_join_mcast_group(sd, mciface, (struct sockaddr *)&raw, raw.sin6_family, ssm_source) != 0) {
+			rist_log_priv3(RIST_LOG_ERROR, "Could not join multicast group: %s on %s\n", host, mciface);
+			udpsocket_close(sd);
+			return -1;
+		}
 	}
 	return sd;
+}
+
+int udpsocket_open_bind(const char *host, uint16_t port, const char *mciface)
+{
+	return udpsocket_open_bind_mcast(host, port, mciface, 0, NULL);
 }
 
 int udpsocket_set_nonblocking(int sd)

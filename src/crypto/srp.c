@@ -47,8 +47,6 @@ static void print_hash(const uint8_t *buf, char *specifier) {
 
 #if HAVE_MBEDTLS
 #include <mbedtls/bignum.h>
-#include <mbedtls/entropy.h>
-#include <mbedtls/ctr_drbg.h>
 #include <mbedtls/sha256.h>
 #include <mbedtls/version.h>
 

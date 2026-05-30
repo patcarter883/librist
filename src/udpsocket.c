@@ -120,7 +120,7 @@ int udpsocket_resolve_host(const char *host, uint16_t port, struct sockaddr *add
  *
  * Best-effort: any platform that does not understand the option keeps the
  * default (fragmenting) behaviour. We log the failure so it is visible. */
-static void udpsocket_set_dontfragment(int sd, uint16_t af)
+void udpsocket_set_dontfragment(int sd, uint16_t af)
 {
 #if defined(__linux__) && defined(IP_MTU_DISCOVER) && defined(IP_PMTUDISC_DO)
 	if (af == AF_INET) {
@@ -205,7 +205,6 @@ int udpsocket_open(uint16_t af)
 			WSAGetLastError());
 	}
 #endif
-	udpsocket_set_dontfragment(sd, af);
 	return sd;
 }
 
@@ -445,6 +444,7 @@ int udpsocket_open_connect(const char *host, uint16_t port, const char *mciface)
 		return -1;
 #endif
 	}
+	udpsocket_set_dontfragment(sd, raw.sin6_family);
 
 	return sd;
 }
@@ -487,6 +487,7 @@ int udpsocket_open_bind(const char *host, uint16_t port, const char *mciface)
 		udpsocket_close(sd);
 		return -1;
 	}
+	udpsocket_set_dontfragment(sd, raw.sin6_family);
 	if (is_multicast && udpsocket_join_mcast_group(sd, mciface, (struct sockaddr *)&raw, raw.sin6_family) != 0) {
 		rist_log_priv3( RIST_LOG_ERROR, "Could not join multicast group: %s on %s\n", host, mciface);
 		udpsocket_close(sd);

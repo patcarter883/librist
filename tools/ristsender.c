@@ -49,6 +49,8 @@
 static int signalReceived = 0;
 static int peer_connected_count = 0;
 static struct rist_logging_settings logging_settings = LOGGING_SETTINGS_INITIALIZER;
+static struct rist_callback_object *g_callback_objects = NULL;
+static int g_callback_object_count = 0;
 
 uint64_t prometheus_id = 0;
 
@@ -65,6 +67,10 @@ struct rist_callback_object {
 	struct rist_ctx_wrap *sender_ctx;
 	struct rist_udp_config *udp_config;
 	uint8_t recv[RIST_MAX_PACKET_SIZE + 100];
+	bool mcast_deferred;
+	char mcast_host[256];
+	uint16_t mcast_port;
+	char mcast_miface[RIST_MAX_STRING_SHORT];
 };
 
 struct rist_callback_tun_object {
@@ -302,10 +308,32 @@ static void usage(char *cmd)
 static void connection_status_callback(void *arg, struct rist_peer *peer, enum rist_connection_status peer_connection_status)
 {
 	(void)arg;
-	if (peer_connection_status == RIST_CONNECTION_ESTABLISHED || peer_connection_status == RIST_CLIENT_CONNECTED)
+	if (peer_connection_status == RIST_CONNECTION_ESTABLISHED || peer_connection_status == RIST_CLIENT_CONNECTED) {
 		peer_connected_count++;
-	else
+		for (int j = 0; j < g_callback_object_count; j++) {
+			if (g_callback_objects[j].mcast_deferred) {
+				struct sockaddr_in6 sa;
+				memset(&sa, 0, sizeof(sa));
+				if (udpsocket_resolve_host(g_callback_objects[j].mcast_host,
+				    g_callback_objects[j].mcast_port, (struct sockaddr *)&sa) == 0) {
+				if (udpsocket_join_mcast_group(g_callback_objects[j].sd,
+				    g_callback_objects[j].mcast_miface,
+				    (struct sockaddr *)&sa, sa.sin6_family, NULL) == 0) {
+						rist_log(&logging_settings, RIST_LOG_INFO,
+							"Deferred multicast join for %s succeeded\n",
+							g_callback_objects[j].mcast_host);
+					} else {
+						rist_log(&logging_settings, RIST_LOG_ERROR,
+							"Deferred multicast join for %s failed\n",
+							g_callback_objects[j].mcast_host);
+					}
+				}
+				g_callback_objects[j].mcast_deferred = false;
+			}
+		}
+	} else {
 		peer_connected_count--;
+	}
 	rist_log(&logging_settings, RIST_LOG_INFO,"Connection Status changed for Peer %"PRIu64", new status is %d, peer connected count is %d\n",
 				peer, peer_connection_status, peer_connected_count);
 }
@@ -1008,15 +1036,77 @@ int main(int argc, char *argv[])
 			}
 			rist_log(&logging_settings, RIST_LOG_INFO, "URL parsed successfully: Host %s, Port %d\n", (char *) hostname, inputport);
 
-			callback_object[i].sd = udpsocket_open_bind(hostname, inputport, udp_config->miface);
-			if (callback_object[i].sd < 0) {
-				rist_log(&logging_settings, RIST_LOG_ERROR, "Could not bind to: Host %s, Port %d, miface %s.\n",
-					(char *) hostname, inputport, udp_config->miface);
-				goto next;
-			} else {
+			int is_mcast = 0;
+			{
+				struct sockaddr_in6 probe;
+				memset(&probe, 0, sizeof(probe));
+				if (udpsocket_resolve_host(hostname, inputport, (struct sockaddr *)&probe) == 0) {
+					if (probe.sin6_family == AF_INET6)
+						is_mcast = IN6_IS_ADDR_MULTICAST(&probe.sin6_addr);
+					else
+						is_mcast = IN_MULTICAST(ntohl(((struct sockaddr_in *)&probe)->sin_addr.s_addr));
+				}
+			}
+
+			if (is_mcast) {
+				struct sockaddr_in6 mcast_sa;
+				memset(&mcast_sa, 0, sizeof(mcast_sa));
+				if (udpsocket_resolve_host(hostname, inputport, (struct sockaddr *)&mcast_sa) < 0) {
+					rist_log(&logging_settings, RIST_LOG_ERROR, "Could not resolve %s\n", hostname);
+					goto next;
+				}
+				uint16_t af = mcast_sa.sin6_family;
+				int sd = udpsocket_open(af);
+				if (sd < 0) {
+					rist_log(&logging_settings, RIST_LOG_ERROR, "Could not open socket for %s\n", hostname);
+					goto next;
+				}
+				int yes_val = 1;
+				setsockopt(sd, SOL_SOCKET, SO_REUSEADDR, (const char *)&yes_val, sizeof(yes_val));
+				struct sockaddr_storage bind_addr;
+				socklen_t bind_len;
+				memset(&bind_addr, 0, sizeof(bind_addr));
+				if (af == AF_INET6) {
+					struct sockaddr_in6 *a6 = (struct sockaddr_in6 *)&bind_addr;
+					a6->sin6_family = AF_INET6;
+					a6->sin6_port = htons(inputport);
+					a6->sin6_addr = in6addr_any;
+					bind_len = sizeof(struct sockaddr_in6);
+				} else {
+					struct sockaddr_in *a4 = (struct sockaddr_in *)&bind_addr;
+					a4->sin_family = AF_INET;
+					a4->sin_port = htons(inputport);
+					a4->sin_addr.s_addr = INADDR_ANY;
+					bind_len = sizeof(struct sockaddr_in);
+				}
+				if (bind(sd, (struct sockaddr *)&bind_addr, bind_len) < 0) {
+#ifdef _WIN32
+					rist_log(&logging_settings, RIST_LOG_ERROR, "Could not bind to port %d: WSAGetLastError=%d\n", inputport, WSAGetLastError());
+#else
+					rist_log(&logging_settings, RIST_LOG_ERROR, "Could not bind to port %d: %s\n", inputport, strerror(errno));
+#endif
+					udpsocket_close(sd);
+					goto next;
+				}
+				callback_object[i].sd = sd;
+				callback_object[i].mcast_deferred = true;
+				snprintf(callback_object[i].mcast_host, sizeof(callback_object[i].mcast_host), "%s", hostname);
+				callback_object[i].mcast_port = inputport;
+				snprintf(callback_object[i].mcast_miface, sizeof(callback_object[i].mcast_miface), "%s", udp_config->miface);
+				rist_log(&logging_settings, RIST_LOG_INFO, "Multicast input %s:%d bound, join deferred until peer handshake\n", hostname, inputport);
 				udpsocket_set_nonblocking(callback_object[i].sd);
-				rist_log(&logging_settings, RIST_LOG_INFO, "Input socket is open and bound %s:%d\n", (char *) hostname, inputport);
 				atleast_one_socket_opened = true;
+			} else {
+				callback_object[i].sd = udpsocket_open_bind(hostname, inputport, udp_config->miface);
+				if (callback_object[i].sd < 0) {
+					rist_log(&logging_settings, RIST_LOG_ERROR, "Could not bind to: Host %s, Port %d, miface %s.\n",
+						(char *) hostname, inputport, udp_config->miface);
+					goto next;
+				} else {
+					udpsocket_set_nonblocking(callback_object[i].sd);
+					rist_log(&logging_settings, RIST_LOG_INFO, "Input socket is open and bound %s:%d\n", (char *) hostname, inputport);
+					atleast_one_socket_opened = true;
+				}
 			}
 			callback_object[i].udp_config = udp_config;
 			udp_config = NULL;
@@ -1032,6 +1122,9 @@ next:
 	if (!atleast_one_socket_opened && !callback_tun_object.tun) {
 		goto shutdown;
 	}
+
+	g_callback_objects = callback_object;
+	g_callback_object_count = MAX_INPUT_COUNT;
 
 	if (evctx && pthread_create(&thread_main_loop[0], NULL, input_loop, (void *)callback_object) != 0)
 	{

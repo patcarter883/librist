@@ -15,7 +15,7 @@
 #include "cjson/cJSON.h"
 
 /* Bump on any incompatible shape change to the stats JSON payloads. */
-#define RIST_STATS_JSON_SCHEMA_VERSION 2
+#define RIST_STATS_JSON_SCHEMA_VERSION 3
 
 static double round_two_digits(double number)
 {
@@ -120,6 +120,8 @@ cJSON *rist_sender_peer_statistics(struct rist_peer *peer)
 	cJSON_AddNumberToObject(json_stats, "ts_null", (double)peer->stats_sender_instant.ts_null);
 	cJSON_AddNumberToObject(json_stats, "received", (double)peer->stats_sender_instant.received);
 	cJSON_AddNumberToObject(json_stats, "retransmitted", (double)peer->stats_sender_instant.retrans);
+	cJSON_AddNumberToObject(json_stats, "sent_bytes", (double)peer->stats_sender_instant.sent_bytes);
+	cJSON_AddNumberToObject(json_stats, "retransmitted_bytes", (double)peer->stats_sender_instant.retransmitted_bytes);
 	cJSON_AddNumberToObject(json_stats, "bandwidth", (double)bitrate);
 	cJSON_AddNumberToObject(json_stats, "retry_bandwidth", (double)retry_bitrate);
 	cJSON_AddNumberToObject(json_stats, "ts_nulls_bandwidth", (double)ts_nulls_bitrate);
@@ -153,6 +155,8 @@ cJSON *rist_sender_peer_statistics(struct rist_peer *peer)
 	stats_container->stats.sender_peer.retransmitted = peer->stats_sender_instant.retrans;
 	stats_container->stats.sender_peer.quality = Q;
 	stats_container->stats.sender_peer.rtt = avg_rtt / RIST_CLOCK;
+	stats_container->stats.sender_peer.sent_bytes = peer->stats_sender_instant.sent_bytes;
+	stats_container->stats.sender_peer.retransmitted_bytes = peer->stats_sender_instant.retransmitted_bytes;
 
 	if (cctx->stats_callback != NULL)
 		cctx->stats_callback(cctx->stats_callback_argument, stats_container);
@@ -216,6 +220,7 @@ void rist_receiver_flow_statistics(struct rist_receiver *ctx, struct rist_flow *
 		cJSON_AddNumberToObject(peer_obj, "dead", peer->dead);
 		cJSON *peer_stats = cJSON_AddObjectToObject(peer_obj, "stats");
 		cJSON_AddNumberToObject(peer_stats, "received_data", (double)peer->stats_receiver_instant.received);
+		cJSON_AddNumberToObject(peer_stats, "received_bytes", (double)peer->stats_receiver_instant.received_bytes);
 		cJSON_AddNumberToObject(peer_stats, "ts_null", (double)peer->stats_receiver_instant.ts_null);	
 		cJSON_AddNumberToObject(peer_stats, "received_rtcp", (double)peer->stats_receiver_instant.received_rtcp);
 		cJSON_AddNumberToObject(peer_stats, "sent_rtcp", (double)peer->stats_receiver_instant.sent_rtcp);
@@ -227,6 +232,7 @@ void rist_receiver_flow_statistics(struct rist_receiver *ctx, struct rist_flow *
 
 		stats_container->stats.receiver_flow.peers[i].peer_id = peer->adv_peer_id;
 		stats_container->stats.receiver_flow.peers[i].received_data = peer->stats_receiver_instant.received;
+		stats_container->stats.receiver_flow.peers[i].received_bytes = peer->stats_receiver_instant.received_bytes;
 		stats_container->stats.receiver_flow.peers[i].received_rtcp = peer->stats_receiver_instant.received_rtcp;
 		stats_container->stats.receiver_flow.peers[i].sent_rtcp = peer->stats_receiver_instant.sent_rtcp;
 		stats_container->stats.receiver_flow.peers[i].rtt = peer->last_rtt / RIST_CLOCK;
@@ -291,6 +297,7 @@ void rist_receiver_flow_statistics(struct rist_receiver *ctx, struct rist_flow *
 	}
 	cJSON_AddNumberToObject(json_stats, "quality", Q);
 	cJSON_AddNumberToObject(json_stats, "received", (double)flow->stats_instant.received);
+	cJSON_AddNumberToObject(json_stats, "received_bytes", (double)flow->stats_instant.received_bytes);
 	cJSON_AddNumberToObject(json_stats, "dropped_late", (double)flow->stats_instant.dropped_late);
 	cJSON_AddNumberToObject(json_stats, "dropped_full", (double)flow->stats_instant.dropped_full);
 	cJSON_AddNumberToObject(json_stats, "missing", (double)flow->stats_instant.missing);
@@ -341,6 +348,7 @@ void rist_receiver_flow_statistics(struct rist_receiver *ctx, struct rist_flow *
 	//stats_container->stats.receiver_flow.ts_nulls_bandwidth = flow->bw_tsnull.bitrate;
 	stats_container->stats.receiver_flow.sent = flow->peer_lst_len ? flow_sent_instant / flow->peer_lst_len : 0;
 	stats_container->stats.receiver_flow.received = flow->stats_instant.received;
+	stats_container->stats.receiver_flow.received_bytes = flow->stats_instant.received_bytes;
 	stats_container->stats.receiver_flow.missing = flow->stats_instant.missing;
 	stats_container->stats.receiver_flow.reordered = flow->stats_instant.reordered;
 	stats_container->stats.receiver_flow.recovered = flow->stats_instant.recovered;

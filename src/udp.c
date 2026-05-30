@@ -185,6 +185,7 @@ size_t rist_send_seq_rtcp(struct rist_peer *p, uint32_t seq_rtp, uint8_t payload
 adv_out:
 		if (ret > 0) {
 			p->stats_sender_instant.sent++;
+			p->stats_sender_instant.sent_bytes += (uint64_t)ret;
 			if (ts_null_bytes)
 				p->stats_sender_instant.ts_null++;
 			p->stats_receiver_instant.sent_rtcp++;
@@ -289,6 +290,7 @@ out:
 		rist_log_priv(ctx, RIST_LOG_ERROR, "\tSend failed: errno=%d, ret=%d, socket=%d\n", errno, ret, p->sd);
 	} else if (ret > 0) {
 		p->stats_sender_instant.sent++;
+		p->stats_sender_instant.sent_bytes += (uint64_t)ret;
 		if (ts_null_bytes)
 			p->stats_sender_instant.ts_null++;
 		p->stats_receiver_instant.sent_rtcp++;
@@ -498,7 +500,8 @@ void rist_create_socket(struct rist_peer *peer)
 			peer->multicast_receiver = IN6_IS_ADDR_MULTICAST(&addrv6->sin6_addr);
 		}
 
-		peer->sd = udpsocket_open_bind(host, port, peer->miface);
+		peer->sd = udpsocket_open_bind_mcast(host, port, peer->miface,
+			peer->config.multicast_ttl, peer->config.multicast_source);
 		if (peer->sd >= 0) {
 			if (port == 0)
 			{
@@ -544,7 +547,6 @@ void rist_create_socket(struct rist_peer *peer)
 		}
 		// We use sendto ... so, no need to connect directly here
 		peer->sd = udpsocket_open(peer->address_family);
-		// TODO : set max hops
 		if (peer->sd >= 0)
 			rist_log_priv(get_cctx(peer), RIST_LOG_INFO, "Starting in URL connect mode (%d)\n", peer->sd);
 		else {
@@ -555,15 +557,24 @@ void rist_create_socket(struct rist_peer *peer)
 			rist_log_priv(get_cctx(peer), RIST_LOG_INFO, "Binding socket to %s\n", peer->miface);
 			if (inet_pton(AF_INET, peer->miface,  &((struct sockaddr_in *)&ss)->sin_addr) != 0) {
 				((struct sockaddr_in *)&ss)->sin_family = AF_INET;
+				((struct sockaddr_in *)&ss)->sin_port = htons(peer->config.local_port);
 				if (bind(peer->sd, (struct sockaddr*)&ss, sizeof(struct sockaddr_in)) != 0) {
-					rist_log_priv(get_cctx(peer), RIST_LOG_ERROR, "Couldn't bind to %s: %s\n", peer->miface, strerror(errno));
+#ifdef _WIN32
+					rist_log_priv(get_cctx(peer), RIST_LOG_ERROR, "Couldn't bind to %s:%u: WSAGetLastError=%d\n", peer->miface, peer->config.local_port, WSAGetLastError());
+#else
+					rist_log_priv(get_cctx(peer), RIST_LOG_ERROR, "Couldn't bind to %s:%u: %s\n", peer->miface, peer->config.local_port, strerror(errno));
+#endif
 				}
 			}
 			else if (inet_pton(AF_INET6, peer->miface, &((struct sockaddr_in6 *)&ss)->sin6_addr) != 0) {
 				((struct sockaddr_in6 *)&ss)->sin6_family = AF_INET6;
-				((struct sockaddr_in6 *)&ss)->sin6_port =0;
+				((struct sockaddr_in6 *)&ss)->sin6_port = htons(peer->config.local_port);
 				if (bind(peer->sd, (struct sockaddr*)&ss, sizeof(struct sockaddr_in6)) != 0) {
-					rist_log_priv(get_cctx(peer), RIST_LOG_ERROR, "Couldn't bind to %s: %s\n", peer->miface, strerror(errno));
+#ifdef _WIN32
+					rist_log_priv(get_cctx(peer), RIST_LOG_ERROR, "Couldn't bind to %s:%u: WSAGetLastError=%d\n", peer->miface, peer->config.local_port, WSAGetLastError());
+#else
+					rist_log_priv(get_cctx(peer), RIST_LOG_ERROR, "Couldn't bind to %s:%u: %s\n", peer->miface, peer->config.local_port, strerror(errno));
+#endif
 				}
 			}
 #ifdef __linux__
@@ -592,9 +603,35 @@ void rist_create_socket(struct rist_peer *peer)
 				rist_log_priv(get_cctx(peer), RIST_LOG_ERROR, "No method available to bind to %s please supply an IP to bind to\n", peer->miface);
 			}
 #endif
+		} else if (peer->config.local_port > 0) {
+			struct sockaddr_storage ss = {0};
+			if (peer->address_family == AF_INET6) {
+				((struct sockaddr_in6 *)&ss)->sin6_family = AF_INET6;
+				((struct sockaddr_in6 *)&ss)->sin6_port = htons(peer->config.local_port);
+				((struct sockaddr_in6 *)&ss)->sin6_addr = in6addr_any;
+			} else {
+				((struct sockaddr_in *)&ss)->sin_family = AF_INET;
+				((struct sockaddr_in *)&ss)->sin_port = htons(peer->config.local_port);
+				((struct sockaddr_in *)&ss)->sin_addr.s_addr = INADDR_ANY;
+			}
+			socklen_t ss_len = peer->address_family == AF_INET6 ? sizeof(struct sockaddr_in6) : sizeof(struct sockaddr_in);
+			if (bind(peer->sd, (struct sockaddr *)&ss, ss_len) != 0) {
+#ifdef _WIN32
+				rist_log_priv(get_cctx(peer), RIST_LOG_WARN, "Couldn't bind to local port %u: WSAGetLastError=%d\n", peer->config.local_port, WSAGetLastError());
+#else
+				rist_log_priv(get_cctx(peer), RIST_LOG_WARN, "Couldn't bind to local port %u: %s\n", peer->config.local_port, strerror(errno));
+#endif
+			} else {
+				rist_log_priv(get_cctx(peer), RIST_LOG_INFO, "Bound caller socket to local port %u\n", peer->config.local_port);
+			}
 		}
+		if (peer->multicast_sender && peer->config.multicast_ttl > 0)
+			udpsocket_set_mcast_ttl(peer->sd, peer->address_family, peer->config.multicast_ttl);
 		udpsocket_set_dontfragment(peer->sd, peer->address_family);
-		peer->local_port = 32768 + (get_cctx(peer)->peer_counter % 28232);
+		if (peer->config.local_port > 0)
+			peer->local_port = peer->config.local_port;
+		else
+			peer->local_port = 32768 + (get_cctx(peer)->peer_counter % 28232);
 #ifdef _WIN32
 		udpsocket_set_nonblocking(peer->sd);
 #endif
@@ -1152,10 +1189,13 @@ ssize_t rist_retry_dequeue(struct rist_sender *ctx)
 	}
 
 	buffer->transmit_count++;
-	if (retry->peer->peer_data)
+	if (retry->peer->peer_data) {
 		retry->peer->peer_data->stats_sender_instant.retrans++;
-	else
+		retry->peer->peer_data->stats_sender_instant.retransmitted_bytes += (uint64_t)ret;
+	} else {
 		retry->peer->stats_sender_instant.retrans++;
+		retry->peer->stats_sender_instant.retransmitted_bytes += (uint64_t)ret;
+	}
 	return ret;
 }
 

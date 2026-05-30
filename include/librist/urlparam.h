@@ -22,6 +22,8 @@
 #define RIST_URL_PARAM_VIRT_DST_PORT "virt-dst-port"
 #define RIST_URL_PARAM_WEIGHT "weight"
 #define RIST_URL_PARAM_MIFACE "miface"
+#define RIST_URL_PARAM_MCAST_TTL "ttl"
+#define RIST_URL_PARAM_MCAST_SOURCE "source"
 #define RIST_URL_PARAM_SESSION_TIMEOUT "session-timeout"
 #define RIST_URL_PARAM_KEEPALIVE_INT "keepalive-interval"
 #define RIST_URL_PARAM_SRP_USERNAME "username"
@@ -51,5 +53,6 @@
 #define RIST_URL_PARAM_VERBOSE_LEVEL "verbose-level"
 #define RIST_URL_PARAM_RTT_MULTIPLIER "rtt-multiplier"
 #define RIST_URL_PARAM_REFLECTOR "reflector"
+#define RIST_URL_PARAM_LOCAL_PORT "local-port"
 
 #endif /* LIBRIST_URL_PARAM_H */

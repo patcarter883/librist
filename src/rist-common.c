@@ -95,6 +95,12 @@ int parse_url_udp_options(const char* url, struct rist_udp_config *output_udp_co
 
 			if (strcmp( url_params[i].key, RIST_URL_PARAM_MIFACE ) == 0) {
 				strncpy((void *)output_udp_config->miface, val, RIST_MAX_STRING_SHORT - 1);
+			} else if (strcmp(url_params[i].key, RIST_URL_PARAM_MCAST_TTL) == 0) {
+				int temp = atoi(val);
+				if (temp > 0 && temp <= 255)
+					output_udp_config->multicast_ttl = (uint32_t)temp;
+			} else if (strcmp(url_params[i].key, RIST_URL_PARAM_MCAST_SOURCE) == 0) {
+				strncpy((void *)output_udp_config->multicast_source, val, RIST_MAX_STRING_LONG - 1);
 			} else if (strcmp( url_params[i].key, RIST_URL_PARAM_STREAM_ID ) == 0) {
 				int temp = atoi( val );
 				if (temp > 0)
@@ -173,6 +179,12 @@ int parse_url_options(const char* url, struct rist_peer_config *output_peer_conf
 					output_peer_config->recovery_length_max = temp;
 			} else if (strcmp( url_params[i].key, RIST_URL_PARAM_MIFACE ) == 0) {
 				strncpy((void *)output_peer_config->miface, val, 128-1);
+			} else if (strcmp(url_params[i].key, RIST_URL_PARAM_MCAST_TTL) == 0) {
+				int temp = atoi(val);
+				if (temp > 0 && temp <= 255)
+					output_peer_config->multicast_ttl = (uint32_t)temp;
+			} else if (strcmp(url_params[i].key, RIST_URL_PARAM_MCAST_SOURCE) == 0) {
+				strncpy((void *)output_peer_config->multicast_source, val, RIST_MAX_STRING_LONG - 1);
 			} else if (strcmp( url_params[i].key, RIST_URL_PARAM_SECRET ) == 0) {
 				strncpy((void *)output_peer_config->secret, val, 128-1);
 			} else if (strcmp( url_params[i].key, RIST_URL_PARAM_SRP_USERNAME) == 0) {
@@ -280,6 +292,10 @@ int parse_url_options(const char* url, struct rist_peer_config *output_peer_conf
 				int temp = atoi( val );
 				if (temp >= 0 && temp <= 1)
 					output_peer_config->reflector = temp;
+			} else if (strcmp( url_params[i].key, RIST_URL_PARAM_LOCAL_PORT ) == 0) {
+				int temp = atoi( val );
+				if (temp > 0 && temp <= 65535)
+					output_peer_config->local_port = (uint16_t)temp;
 			} else {
 				ret = -1;
 				fprintf(stderr, "Unknown or invalid parameter %s\n", url_params[i].key);
@@ -753,6 +769,7 @@ static int receiver_enqueue(struct rist_peer *peer, uint64_t source_time, uint64
 	if (out_of_order)
 		f->stats_instant.reordered++;
 	f->stats_instant.received++;
+	f->stats_instant.received_bytes += (uint64_t)len;
 	pthread_mutex_unlock(&(get_cctx(peer)->stats_lock));
 	// Check for missing data and queue retries
 	if (!retry) {
@@ -2032,6 +2049,7 @@ static void rist_receiver_recv_data(struct rist_peer *peer, uint32_t seq, uint32
 	/* * * * * * * * * * * * * * * * * * * */
 	/**************** WIP *****************/
 	peer->stats_receiver_instant.received++;
+	peer->stats_receiver_instant.received_bytes += (uint64_t)ingest_size;
 
 	uint64_t rtt;
 	rtt = peer->eight_times_rtt / 8;
@@ -2479,6 +2497,10 @@ static void peer_copy_settings(struct rist_peer *peer_src, struct rist_peer *pee
 	peer->config.max_retries = peer_src->config.max_retries;
 	peer->config.timing_mode = peer_src->config.timing_mode;
 	peer->config.reflector = peer_src->config.reflector;
+	peer->config.multicast_ttl = peer_src->config.multicast_ttl;
+	strncpy(peer->config.multicast_source, peer_src->config.multicast_source, RIST_MAX_STRING_LONG - 1);
+	peer->config.multicast_source[RIST_MAX_STRING_LONG - 1] = '\0';
+	peer->config.local_port = peer_src->config.local_port;
 	peer->rtcp_keepalive_interval = peer_src->rtcp_keepalive_interval;
 	peer->peer_ssrc = peer_src->peer_ssrc;
 	peer->session_timeout = peer_src->session_timeout;

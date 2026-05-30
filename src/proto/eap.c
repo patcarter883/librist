@@ -799,7 +799,7 @@ int _librist_proto_eap_start(struct eapsrp_ctx *ctx)
 	struct eapol_hdr eapol;
 	eapol.eapversion = 3;
 	eapol.eaptype = EAPOL_TYPE_START;
-	eapol.length = htobe16(sizeof(eapol));
+	eapol.length = 0;
 	if (_librist_proto_gre_send_data(ctx->peer, 0, RIST_GRE_PROTOCOL_TYPE_EAPOL, (uint8_t*)&eapol, sizeof(eapol), 0, 0, ctx->peer->rist_gre_version) < 0)
 		return -1;
 	return 0;

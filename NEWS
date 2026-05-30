@@ -48,6 +48,8 @@ New Features:
   - PSK encryption mode 1 (AES-CTR, Main Profile compatible) with
     per-packet Nonce/IV in the AP header.
   - Future Nonce Announcement (CI=0x8011) for zero-latency key rotation.
+  - SRP (Secure Remote Password) passphrase exchange, reusing the EAP-SRP
+    state machine from Main Profile over Type 8 encapsulated EAPOL.
   - Flow ID field (I flag): virt_dst_port and virt_src_port map to/from
     the AP Outer/Inner Flow ID hierarchy on the wire.
   - LZ4 payload compression (LPC=1): sender compresses before encryption,
@@ -60,8 +62,8 @@ New Features:
     to the application.
   - Baseline.Direct conformance for single-flow encrypted point-to-point
     RIST transport with ARQ.
-  - 18 integration tests (basic, packet loss, encryption, mismatch,
-    flow-id, lz4, lz4+encryption, flow-attr).
+  - 22 integration tests (basic, packet loss, encryption, mismatch,
+    flow-id, lz4, lz4+encryption, flow-attr, SRP auth).
   - 187 unit tests (wire format, timestamp, seq_index, Type 8, PSK modes,
     Flow ID mapping, LZ4 roundtrip, flow-attr control roundtrip).
 
@@ -101,6 +103,12 @@ RTCP/NACK:
    next NUL).  Add a sizeof guard and use %.4s.
 
 EAP/SRP:
+ - Fix EAPOL-Start body length field: the packet declared a 4-byte body
+   (sizeof(eapol_hdr)) when the correct value is 0 (EAPOL-Start carries
+   no body).  This bug was dormant until the bounds-check tightening in
+   0.2.15 started correctly rejecting oversized body declarations,
+   which broke every SRP handshake.  SRP authentication has been
+   non-functional since 0.2.15.
  - Fix off-by-one in eap_srp_send_password bounds check: the limit did
    not account for the 1-byte flags field before the ciphertext, so a
    maximum-length password would write 1 byte past the stack buffer.

@@ -67,8 +67,22 @@ typedef struct udpsocket_url_param {
  *
  * Returns: socket descriptor, -1 for error (errno is set)
  *
+ * Note: callers that bind() or connect() the socket should call
+ *       udpsocket_set_dontfragment() afterwards; on Windows,
+ *       IPV6_DONTFRAG setsockopt on an unbound IPv6 socket can
+ *       cause a subsequent bind() to fail with WSAEADDRNOTAVAIL.
  */
 RIST_API int udpsocket_open(uint16_t af);
+
+/* Set IP-level "don't fragment" on a UDP socket.
+ *
+ * Best-effort: platforms that do not support the option keep the
+ * default (fragmenting) behaviour; the failure is logged as a warning.
+ *
+ * On Windows, this must be called AFTER bind()/connect() for IPv6
+ * sockets (see rist/librist#212).
+ */
+RIST_API void udpsocket_set_dontfragment(int sd, uint16_t af);
 
 /* Open a udp socket and binds it to local [host] + [port].
  *

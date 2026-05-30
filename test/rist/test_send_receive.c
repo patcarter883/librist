@@ -21,6 +21,7 @@ atomic_ulong stop;
 atomic_ulong flow_attr_received;
 int use_seq = 0;
 int check_flow_attr = 0;
+int has_loss = 0;
 #define USE_SEQ_START 1000
 
 struct rist_logging_settings *logging_settings_sender = NULL;
@@ -33,14 +34,10 @@ int log_callback(void *arg, int level, const char *msg) {
         fprintf(stdout, "[%s] %s",(char*)arg, msg);
     if (level <= RIST_LOG_ERROR) {
 	fprintf(stdout, "[%s] [ERROR] %s", (char* )arg, msg);
-	/* This SHOULD fail the test, I've disabled it so that we pass the encryption tests.
-	   in the encryption test we are hitting a condition where the linux crypto stuff seems
-	   to not be initialized quickly enough, and we print error messages because decryption
-	   is not working correctly, however this is an intermittent issue and solves itself.
-	   Furthermore it is not triggered by the CLI tools.
-	   This should be investigated and fixed */
-        atomic_store(&failed, 1);
-        atomic_store(&stop, 1);
+	if (!has_loss) {
+	    atomic_store(&failed, 1);
+	    atomic_store(&stop, 1);
+	}
     }
     return 0;
 }
@@ -207,6 +204,7 @@ int main(int argc, char *argv[]) {
     char *url1 = strdup(argv[2]);
     char *url2 = strdup(argv[3]);
     int losspercent = atoi(argv[4]) * 10;
+    has_loss = losspercent > 0;
     int npd = 0;
     int ret = 0;
 
@@ -317,8 +315,13 @@ int main(int argc, char *argv[]) {
             rist_receiver_data_block_free2((struct rist_data_block **const)&b);
         }
     }
-	if (!got_first || receive_count < 12500)
+	int expected = 16000 * (1000 - losspercent) / 1000;
+	int min_receive = (expected < 12500) ? expected * 5 / 6 : 12500;
+	if (!got_first || receive_count < min_receive) {
+		fprintf(stderr, "Received %d packets, minimum required %d\n",
+			receive_count, min_receive);
 		atomic_store(&failed, 1);
+	}
 	if (check_flow_attr) {
 		unsigned long fa_count = atomic_load(&flow_attr_received);
 		fprintf(stdout, "Flow attributes received: %lu\n", fa_count);

@@ -161,6 +161,11 @@ struct rist_peer_config
 
 	/* SSM source address for IGMPv3 source-specific multicast (empty = ASM) */
 	char multicast_source[RIST_MAX_STRING_LONG];
+
+	/* Local UDP port for caller (non-listening) peers.
+	 * 0 = ephemeral (OS-assigned), non-zero = bind to this port.
+	 * Not all platforms support binding caller sockets to a fixed port. */
+	uint16_t local_port;
 };
 
 /**

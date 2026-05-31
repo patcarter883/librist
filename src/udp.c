@@ -189,8 +189,10 @@ adv_out:
 			if (ts_null_bytes)
 				p->stats_sender_instant.ts_null++;
 			p->stats_receiver_instant.sent_rtcp++;
-			rist_calculate_bitrate((size_t)ret, &p->bw);
-			rist_calculate_bitrate(ts_null_bytes, &p->ts_nulls_bw);
+			/* Bandwidth accounting is handled by callers:
+			 * rist_send_common_rtcp counts new data into p->bw, and
+			 * the retry path counts retransmissions into retry_bw.
+			 * Counting here too doubles the data bandwidth stat. */
 		}
 		return (size_t)ret;
 	}

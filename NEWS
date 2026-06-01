@@ -16,6 +16,10 @@ Bug Fixes:
   - Windows XP support restored: rist_transport_poll() now uses
     select() via the existing contrib/poll_win.c shim instead of
     WSAPoll() (Vista+ only).  Regression introduced in 0.2.17.
+  - rist_peer_recv() now accepts both canonical numeric EAGAIN errno
+    values (11 and 35) when a custom transport_ops backend signals
+    "no data ready", protecting cross-compile environments where the
+    EAGAIN macro can resolve differently across translation units.
 
 
 Changes for 0.2.17:

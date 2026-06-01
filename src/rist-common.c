@@ -2587,7 +2587,11 @@ static void rist_peer_recv(struct evsocket_ctx *evctx, int fd, short revents, vo
 	if (ret <= 0) {
 		*again = false;
 		int errorcode = errno;
-		if (errno == EAGAIN || errno == EWOULDBLOCK)
+		/* Custom transports compiled in a different TU may have EAGAIN
+		 * resolve to a different numeric value than this TU; match both
+		 * canonical values defensively. */
+		if (errno == EAGAIN || errno == EWOULDBLOCK ||
+		    (ret == -1 && (errorcode == 11 || errorcode == 35)))
 				return;
 #else
 	if (ret == SOCKET_ERROR) {

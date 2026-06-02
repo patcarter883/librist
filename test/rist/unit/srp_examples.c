@@ -99,7 +99,7 @@ static int srp_test_state_setup(void **state) {
 	s->g = SRP_TEST_G_2048;
 #if HAVE_MBEDTLS
 	librist_crypto_srp_create_verifier(s->n, s->g, "rist", "mainprofile", &s->salt, &s->salt_len, &s->incorrect_hash_verifier, &s->verifier_len, false);
-	s->wrong_hash_authenticator = librist_crypto_srp_authenticator_ctx_create(s->n, s->g, s->incorrect_hash_verifier, s->verifier_len, s->salt, s->salt_len, false);
+	s->wrong_hash_authenticator = librist_crypto_srp_authenticator_ctx_create(s->n, s->g, s->incorrect_hash_verifier, s->verifier_len, s->salt, s->salt_len, false, false);
 	size_t v_len = s->verifier_len;
 	free(s->salt);
 	s->salt = NULL;
@@ -108,15 +108,15 @@ static int srp_test_state_setup(void **state) {
 #if HAVE_MBEDTLS
 	assert(v_len == s->verifier_len);
 #endif
-	s->correct_hash_authenticator = librist_crypto_srp_authenticator_ctx_create(s->n, s->g, s->correct_hash_verifier, s->verifier_len, s->salt, s->salt_len, true);
+	s->correct_hash_authenticator = librist_crypto_srp_authenticator_ctx_create(s->n, s->g, s->correct_hash_verifier, s->verifier_len, s->salt, s->salt_len, true, false);
 
 	/* Client uses default_ng=true (NG_DEFAULT = 2048-bit) which matches
 	 * the authenticator's inlined SRP_TEST_N_2048 above.  Passing custom
 	 * sub-1024-bit N/g would (correctly) be rejected by audit3 L3. */
 #if HAVE_MBEDTLS
-	s->wrong_hash_client = librist_crypto_srp_client_ctx_create(true, NULL, 0, NULL, 0, s->salt, s->salt_len, false);
+	s->wrong_hash_client = librist_crypto_srp_client_ctx_create(true, NULL, 0, NULL, 0, s->salt, s->salt_len, false, false);
 #endif
-	s->correct_hash_client = librist_crypto_srp_client_ctx_create(true, NULL, 0, NULL, 0, s->salt, s->salt_len, true);
+	s->correct_hash_client = librist_crypto_srp_client_ctx_create(true, NULL, 0, NULL, 0, s->salt, s->salt_len, true, false);
 	return 0;
 }
 
@@ -205,7 +205,7 @@ static void test_srp_wrong_hashing_verifier_create(void **state) {
 
 static void test_srp_wrong_hashing_auth_ctx_create(void **state) {
 	struct srp_test_state *s = *state;
-	struct librist_crypto_srp_authenticator_ctx * ctx = librist_crypto_srp_authenticator_ctx_create(s->n, s->g, s->incorrect_hash_verifier, s->verifier_len, s->salt, s->salt_len, false);
+	struct librist_crypto_srp_authenticator_ctx * ctx = librist_crypto_srp_authenticator_ctx_create(s->n, s->g, s->incorrect_hash_verifier, s->verifier_len, s->salt, s->salt_len, false, false);
 	assert_true(ctx != NULL);
 
 	const char well_known_n[] = "AC6BDB41324A9A9BF166DE5E1389582FAF72B6651987EE07FC3192943DB56050A37329CBB4A099ED8193E0757767A13DD52312AB4B03310DCD7F48A9DA04FD50E8083969EDB767B0CF6095179A163AB3661A05FBD5FAAAE82918A9962F0B93B855F97993EC975EEAA80D740ADBF4FF747359D041D5C33EA71D281E446B14773BCA97B43A23FB801676BD207A436C6481F1D2B9078717461A5B9D32E688F87748544523B524B0D57D5EA77A2775D2ECFA032CFBDBF52FB3786160279004E57AE6AF874E7303CE53299CCC041C7BC308D82A5698F3A8D0C38271AE35F8E9DBFBB694B5C803D89F7AE435DE236D525F54759B65E372FCD68EF20FA7111F9E4AFF73";
@@ -273,7 +273,7 @@ static void test_srp_client_ctx_create(void **state) {
 	hexstr_to_uint(salt_hex, salt, sizeof(salt));
 
 	/* Default-NG path. */
-	struct librist_crypto_srp_client_ctx *ctx = librist_crypto_srp_client_ctx_create(true, NULL, 0, NULL, 0, salt, sizeof(salt), true);
+	struct librist_crypto_srp_client_ctx *ctx = librist_crypto_srp_client_ctx_create(true, NULL, 0, NULL, 0, salt, sizeof(salt), true, false);
 	assert_true(ctx != NULL);
 
 	/* librist_srp_client_write_A_bytes returns a byte string of length
@@ -287,7 +287,7 @@ static void test_srp_client_ctx_create(void **state) {
 	uint8_t N[256];
 	hexstr_to_uint(SRP_TEST_N_2048, N, sizeof(N));
 	uint8_t g[1] = {0x02};
-	ctx = librist_crypto_srp_client_ctx_create(false, N, sizeof(N), g, sizeof(g), salt, sizeof(salt), true);
+	ctx = librist_crypto_srp_client_ctx_create(false, N, sizeof(N), g, sizeof(g), salt, sizeof(salt), true, false);
 	assert_true(ctx != NULL);
 	assert_int_equal(librist_crypto_srp_client_write_A_bytes(ctx, A, sizeof(A)), (ssize_t)sizeof(A));
 	librist_crypto_srp_client_ctx_free(ctx);
@@ -350,7 +350,7 @@ static void test_srp_correct_hashing_verifier_create(void **state) {
 
 static void test_srp_correct_hashing_auth_ctx_create(void **state) {
 	struct srp_test_state *s = *state;
-	struct librist_crypto_srp_authenticator_ctx * ctx = librist_crypto_srp_authenticator_ctx_create(s->n, s->g, s->correct_hash_verifier, s->verifier_len, s->salt, s->salt_len, true);
+	struct librist_crypto_srp_authenticator_ctx * ctx = librist_crypto_srp_authenticator_ctx_create(s->n, s->g, s->correct_hash_verifier, s->verifier_len, s->salt, s->salt_len, true, false);
 	assert_true(ctx != NULL);
 
 	const char well_known_n[] = "AC6BDB41324A9A9BF166DE5E1389582FAF72B6651987EE07FC3192943DB56050A37329CBB4A099ED8193E0757767A13DD52312AB4B03310DCD7F48A9DA04FD50E8083969EDB767B0CF6095179A163AB3661A05FBD5FAAAE82918A9962F0B93B855F97993EC975EEAA80D740ADBF4FF747359D041D5C33EA71D281E446B14773BCA97B43A23FB801676BD207A436C6481F1D2B9078717461A5B9D32E688F87748544523B524B0D57D5EA77A2775D2ECFA032CFBDBF52FB3786160279004E57AE6AF874E7303CE53299CCC041C7BC308D82A5698F3A8D0C38271AE35F8E9DBFBB694B5C803D89F7AE435DE236D525F54759B65E372FCD68EF20FA7111F9E4AFF73";
@@ -434,6 +434,90 @@ static void test_srp_correct_hashing_client_verify_M2(void **state) {
 	assert_int_equal(librist_crypto_srp_client_verify_m2(ctx->correct_hash_client, M2), 0);
 }
 
+/* Fresh authenticator+client pair using only the public SRP API.  These
+ * tests do not depend on the deterministic fixture above (a/b are random
+ * each run) and exercise the srp-compat=legacy plumbing end-to-end.
+ *
+ * Four exchanges on the 2048-bit NG_DEFAULT group:
+ *   1. Both PAD (default)               → handshake succeeds (verify_m1 == 0)
+ *   2. Both LEGACY (unpadded)           → handshake succeeds (verify_m1 == 0)
+ *   3. Authenticator PAD, client LEGACY → handshake fails (verify_m1 != 0)
+ *   4. Authenticator LEGACY, client PAD → handshake fails (verify_m1 != 0)
+ *
+ * Cases 3 and 4 are the "operator forgot to set srp-compat on one side"
+ * scenarios.  They MUST fail at M1 (otherwise the legacy-bypass would be
+ * leaking through), but we do not attempt to detect the cross-mode case
+ * cryptographically — that is impossible without changing the wire
+ * protocol because the SRP-6a identity (Av^u)^b = (B - kg^x)^(a+ux)
+ * only holds when both sides use the same k. */
+static int srp_run_exchange(bool auth_legacy, bool client_legacy) {
+	const char *username = "rist";
+	const char *password = "mainprofile";
+	const char *n = NULL;
+	const char *g = NULL;
+	if (librist_get_ng_constants(LIBRIST_SRP_NG_DEFAULT, &n, &g) != 0)
+		return -100;
+
+	uint8_t *salt = NULL;
+	size_t   salt_len = 0;
+	uint8_t *verifier = NULL;
+	size_t   verifier_len = 0;
+	if (librist_crypto_srp_create_verifier(n, g, username, password, &salt, &salt_len, &verifier, &verifier_len, true) != 0)
+		return -101;
+
+	struct librist_crypto_srp_authenticator_ctx *auth =
+		librist_crypto_srp_authenticator_ctx_create(n, g, verifier, verifier_len, salt, salt_len, true, auth_legacy);
+	struct librist_crypto_srp_client_ctx *client =
+		librist_crypto_srp_client_ctx_create(true, NULL, 0, NULL, 0, salt, salt_len, true, client_legacy);
+	int ret = -102;
+	if (auth == NULL || client == NULL)
+		goto out;
+
+	uint8_t A[256];
+	int alen = librist_crypto_srp_client_write_A_bytes(client, A, sizeof(A));
+	if (alen != (int)sizeof(A))
+		goto out;
+	if (librist_crypto_srp_authenticator_handle_A(auth, A, sizeof(A)) != 0)
+		goto out;
+
+	uint8_t B[256];
+	if (librist_crypto_srp_authenticator_write_B_bytes(auth, B, sizeof(B)) != (int)sizeof(B))
+		goto out;
+	if (librist_crypto_srp_client_handle_B(client, B, sizeof(B), username, password) != 0)
+		goto out;
+
+	uint8_t M1[SHA256_DIGEST_LENGTH];
+	librist_crypto_srp_client_write_M1_bytes(client, M1);
+
+	/* The value under test: 0 on a matching mode-pair, -2 on a
+	 * mode-mismatch the diagnostic recognised, -1 on opaque failure. */
+	ret = librist_crypto_srp_authenticator_verify_m1(auth, username, M1);
+
+out:
+	librist_crypto_srp_authenticator_ctx_free(auth);
+	librist_crypto_srp_client_ctx_free(client);
+	free(verifier);
+	free(salt);
+	return ret;
+}
+
+static void test_srp_compat_both_pad(void **state) {
+	(void)state;
+	assert_int_equal(srp_run_exchange(false, false), 0);
+}
+static void test_srp_compat_both_legacy(void **state) {
+	(void)state;
+	assert_int_equal(srp_run_exchange(true, true), 0);
+}
+static void test_srp_compat_mismatch_auth_pad_client_legacy(void **state) {
+	(void)state;
+	assert_int_not_equal(srp_run_exchange(false, true), 0);
+}
+static void test_srp_compat_mismatch_auth_legacy_client_pad(void **state) {
+	(void)state;
+	assert_int_not_equal(srp_run_exchange(true, false), 0);
+}
+
 int main(void) {
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test(test_hash_func),
@@ -456,6 +540,10 @@ int main(void) {
 #endif
 		cmocka_unit_test(test_srp_correct_hashing_client_handle_B),
 		cmocka_unit_test(test_srp_correct_hashing_client_verify_M2),
+		cmocka_unit_test(test_srp_compat_both_pad),
+		cmocka_unit_test(test_srp_compat_both_legacy),
+		cmocka_unit_test(test_srp_compat_mismatch_auth_pad_client_legacy),
+		cmocka_unit_test(test_srp_compat_mismatch_auth_legacy_client_pad),
 	};
 
     return cmocka_run_group_tests(tests, srp_test_state_setup, srp_test_state_teardown);

@@ -1,13 +1,17 @@
-cmocka = meson.get_compiler('c').find_library('cmocka', required: false)
+cmocka = dependency('cmocka', required: false, fallback: ['cmocka', 'cmocka_dep'])
 
 if cmocka.found()
 	if have_srp
+		srp_unit_deps = [threads, cmocka, crypto_deps]
+		if host_machine.system() == 'windows'
+			srp_unit_deps += cc.find_library('bcrypt')  # random.c calls BCryptGenRandom
+		endif
 		srp_unit = executable('srp_unit', rev_target,
 								'srp_examples.c',
 								'../../../contrib/pthread-shim.c',
 								'../../../src/crypto/random.c',
 								include_directories : inc,
-								dependencies : [threads, cmocka,crypto_deps],
+								dependencies : srp_unit_deps,
 		)
 
 		test('srp_unit_test', srp_unit, suite:['unit'])

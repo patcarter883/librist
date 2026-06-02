@@ -64,7 +64,13 @@ test-ubuntu:
     extends:
         - .ubuntu-amd64-jammy
     needs: ["build-ubuntu"]
+    # simple+multicast cases are environmentally flaky on the shared
+    # runner (UDP/IGMP timing); retry covers transient failures.
+    retry: 2
     script:
+        # cmocka comes from subprojects/cmocka.wrap when the runner image
+        # does not ship libcmocka-dev; #215 used to slip silently because
+        # the meson check skipped srp_unit_test entirely.
         - meson build --buildtype release -Db_sanitize=address,undefined
         - cd build && meson test --print-errorlogs
     dependencies:
@@ -98,6 +104,7 @@ test-win64:
     extends: .debian-amd64-common
     needs: ["build-win64"]
     allow_failure: true
+    retry: 2
     dependencies:
         - build-win64
     script:

@@ -14,6 +14,9 @@
 # define _WIN32_WINNT 0x0600
 #endif
 #include <winsock2.h>
+
+typedef unsigned long int nfds_t;
+#include "contrib/poll_win.c"
 #else
 #include <sys/socket.h>
 #include <poll.h>
@@ -99,11 +102,7 @@ int rist_transport_poll(struct rist_common_ctx *ctx,
 		                           fds, nfds, timeout_ms);
 	}
 
-#ifdef _WIN32
-	return WSAPoll(fds, nfds, timeout_ms);
-#else
 	return poll(fds, nfds, timeout_ms);
-#endif
 }
 
 #ifndef _WIN32

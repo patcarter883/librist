@@ -21,6 +21,15 @@ Bug Fixes:
     "no data ready", protecting cross-compile environments where the
     EAGAIN macro can resolve differently across translation units.
 
+Tools:
+  - ristsender: new --blind-send option.  Decouples the sender from
+    RIST peer state — multicast input groups are joined immediately
+    and incoming UDP data is written to the RIST context regardless
+    of whether any output peer has connected.  Intended for
+    fire-and-forget broadcast topologies (multicast output in
+    simple/main/advanced profile, or ristsender used as a relay /
+    fan-out in front of non-RIST consumers).
+
 
 Changes for 0.2.17:
 ---------------------------------

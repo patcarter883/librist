@@ -191,6 +191,9 @@ int parse_url_options(const char* url, struct rist_peer_config *output_peer_conf
 				strncpy((void *)output_peer_config->srp_username, val, 256 -1);
 			} else if (strcmp( url_params[i].key, RIST_URL_PARAM_SRP_PASSWORD) == 0) {
 				strncpy((void *)output_peer_config->srp_password, val, 256 -1);
+			} else if (strcmp( url_params[i].key, RIST_URL_PARAM_SRP_COMPAT) == 0) {
+				output_peer_config->srp_compat_legacy =
+					(strcmp(val, "legacy") == 0 || strcmp(val, "1") == 0) ? 1 : 0;
 			} else if (strcmp( url_params[i].key, RIST_URL_PARAM_CNAME ) == 0) {
 				strncpy((void *)output_peer_config->cname, val, 128-1);
 			} else if (strcmp( url_params[i].key, RIST_URL_PARAM_AES_TYPE ) == 0) {
@@ -4379,6 +4382,7 @@ static void store_peer_settings(const struct rist_peer_config *settings, struct 
 	peer->config.timing_mode = settings->timing_mode;
 	peer->config.virt_dst_port = settings->virt_dst_port;
 	peer->config.reflector = settings->reflector;
+	peer->config.srp_compat_legacy = settings->srp_compat_legacy; //read by rist_enable_eap_srp_2 after peer_create
 
 	init_peer_settings(peer);
 }

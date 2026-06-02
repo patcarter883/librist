@@ -77,7 +77,7 @@ enum librist_merge_mode
 	LIBRIST_MERGE_MODE_AUTO  = 2,
 };
 
-#define RIST_PEER_CONFIG_VERSION (2)
+#define RIST_PEER_CONFIG_VERSION (3)
 
 struct rist_peer_config
 {
@@ -166,6 +166,8 @@ struct rist_peer_config
 	 * 0 = ephemeral (OS-assigned), non-zero = bind to this port.
 	 * Not all platforms support binding caller sockets to a fixed port. */
 	uint16_t local_port;
+
+	int srp_compat_legacy;    /* 0 = RFC 5054 PAD (default), 1 = pre-0.2.16 unpadded */
 };
 
 /**

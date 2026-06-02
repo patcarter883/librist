@@ -48,6 +48,7 @@
 
 static int signalReceived = 0;
 static int peer_connected_count = 0;
+static bool blind_send = false;
 static struct rist_logging_settings logging_settings = LOGGING_SETTINGS_INITIALIZER;
 static struct rist_callback_object *g_callback_objects = NULL;
 static int g_callback_object_count = 0;
@@ -129,6 +130,7 @@ static struct option long_options[] = {
 #endif
 { "fast-start",      required_argument, NULL, 'f' },
 { "config",          required_argument, NULL, 'c' },
+{ "blind-send",      no_argument,       NULL, 5 },
 { "help",            no_argument,       NULL, 'h' },
 { "help-url",        no_argument,       NULL, 'u' },
 #if HAVE_PROMETHEUS_SUPPORT
@@ -191,6 +193,7 @@ const char help_str[] = "Usage: %s [OPTIONS] \nWhere OPTIONS are:\n"
 "          | --metrics-unix                       | Unix socket to expose metrics on                         |\n"
 #endif //HAVE_SOCK_UN_H
 #endif //HAVE_PROMETHEUS_SUPPORT
+"          | --blind-send                         | Stream regardless of peer state (fire-and-forget mode)   |\n"
 "       -h | --help                               | Show this help                                           |\n"
 "       -u | --help-url                           | Show all the possible url options                        |\n"
 "   * == mandatory value \n"
@@ -277,7 +280,7 @@ static void input_udp_recv(struct evsocket_ctx *evctx, int fd, short revents, vo
 			data_block.payload = recv_buf + offset + ipheader_bytes;
 			data_block.payload_len = recv_bufsize - offset;
 		}
-		if (peer_connected_count) {
+		if (peer_connected_count || blind_send) {
 			if (rist_sender_data_write(callback_object->sender_ctx->ctx, &data_block) < 0)
 				rist_log(&logging_settings, RIST_LOG_ERROR, "Error writing data in input_udp_recv, socket=%d\n", callback_object->sd);
 		}
@@ -876,6 +879,9 @@ int main(int argc, char *argv[])
 #endif
 			cleanup_tools_config(yaml_config);
 			break;
+		case 5:
+			blind_send = true;
+			break;
 		case 'h':
 			/* Fall through */
 		default:
@@ -1089,11 +1095,27 @@ int main(int argc, char *argv[])
 					goto next;
 				}
 				callback_object[i].sd = sd;
-				callback_object[i].mcast_deferred = true;
-				snprintf(callback_object[i].mcast_host, sizeof(callback_object[i].mcast_host), "%s", hostname);
-				callback_object[i].mcast_port = inputport;
-				snprintf(callback_object[i].mcast_miface, sizeof(callback_object[i].mcast_miface), "%s", udp_config->miface);
-				rist_log(&logging_settings, RIST_LOG_INFO, "Multicast input %s:%d bound, join deferred until peer handshake\n", hostname, inputport);
+				if (blind_send) {
+					if (udpsocket_join_mcast_group(sd, udp_config->miface,
+					    (struct sockaddr *)&mcast_sa, af, NULL) != 0) {
+						rist_log(&logging_settings, RIST_LOG_ERROR,
+							"Could not join multicast group %s on %s\n",
+							hostname, udp_config->miface[0] ? udp_config->miface : "default");
+						udpsocket_close(sd);
+						goto next;
+					}
+					rist_log(&logging_settings, RIST_LOG_INFO,
+						"Multicast input %s:%d joined immediately (--blind-send)\n",
+						hostname, inputport);
+				} else {
+					callback_object[i].mcast_deferred = true;
+					snprintf(callback_object[i].mcast_host, sizeof(callback_object[i].mcast_host), "%s", hostname);
+					callback_object[i].mcast_port = inputport;
+					snprintf(callback_object[i].mcast_miface, sizeof(callback_object[i].mcast_miface), "%s", udp_config->miface);
+					rist_log(&logging_settings, RIST_LOG_INFO,
+						"Multicast input %s:%d bound, join deferred until peer handshake\n",
+						hostname, inputport);
+				}
 				udpsocket_set_nonblocking(callback_object[i].sd);
 				atleast_one_socket_opened = true;
 			} else {

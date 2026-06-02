@@ -281,6 +281,29 @@ static int librist_crypto_srp_hash_2_bignum_padded(size_t pad_len, BIGNUM *A, BI
 	return librist_crypto_srp_hash(AB, pad_len * 2, hash_out);
 }
 
+/* Pre-0.2.16 unpadded variant; only reachable when ctx->legacy_pad is set. */
+static int librist_crypto_srp_hash_2_bignum_unpadded(BIGNUM *A, BIGNUM *B, uint8_t hash_out[SHA256_DIGEST_LENGTH])
+{
+	size_t A_size = BIGNUM_GET_BINARY_SIZE(A);
+	size_t B_size = BIGNUM_GET_BINARY_SIZE(B);
+	uint8_t AB[2048];
+
+	if (A_size + B_size > sizeof(AB))
+		return -1;
+
+	BIGNUM_WRITE_BYTES(A, AB,          A_size);
+	BIGNUM_WRITE_BYTES(B, AB + A_size, B_size);
+
+	return librist_crypto_srp_hash(AB, A_size + B_size, hash_out);
+}
+
+static int srp_hash_uk(bool legacy_pad, size_t pad_len, BIGNUM *X, BIGNUM *Y, uint8_t hash_out[SHA256_DIGEST_LENGTH])
+{
+	if (legacy_pad)
+		return librist_crypto_srp_hash_2_bignum_unpadded(X, Y, hash_out);
+	return librist_crypto_srp_hash_2_bignum_padded(pad_len, X, Y, hash_out);
+}
+
 static int librist_crypto_srp_hash_bignum(BIGNUM *in, uint8_t hash_out[SHA256_DIGEST_LENGTH])
 {
 	size_t size = BIGNUM_GET_BINARY_SIZE(in);
@@ -409,9 +432,10 @@ struct librist_crypto_srp_authenticator_ctx {
 	uint8_t m2[SHA256_DIGEST_LENGTH];
 
 	bool correct_hashing_init;
+	bool legacy_pad;             //pre-0.2.16 unpadded u/k (srp-compat=legacy)
 };
 
-struct librist_crypto_srp_authenticator_ctx *librist_crypto_srp_authenticator_ctx_create(const char* n_hex, const char *g_hex, const uint8_t *v_bytes, size_t v_len, const uint8_t *s_bytes, size_t s_len, bool correct) {
+struct librist_crypto_srp_authenticator_ctx *librist_crypto_srp_authenticator_ctx_create(const char* n_hex, const char *g_hex, const uint8_t *v_bytes, size_t v_len, const uint8_t *s_bytes, size_t s_len, bool correct, bool legacy_pad) {
 	if (!v_bytes || !s_bytes || v_len == 0 || s_len == 0)
 		return NULL;
 	struct librist_crypto_srp_authenticator_ctx *ctx = calloc(1, sizeof(*ctx));
@@ -419,6 +443,7 @@ struct librist_crypto_srp_authenticator_ctx *librist_crypto_srp_authenticator_ct
 		return NULL;
 
 	ctx->correct_hashing_init = correct;
+	ctx->legacy_pad = legacy_pad;
 	BIGNUM_INIT(&ctx->N);
 	BIGNUM_INIT(&ctx->g);
 	BIGNUM_INIT(&ctx->v);
@@ -551,10 +576,10 @@ int librist_crypto_srp_authenticator_handle_A(struct librist_crypto_srp_authenti
 #endif
 
 
-	//calc k = SHA256(N | PAD(g))  (RFC 5054)
+	//calc k = SHA256(PAD(N) | PAD(g))  (RFC 5054); legacy_pad strips the PAD.
 	uint8_t k_hash[SHA256_DIGEST_LENGTH];
 	size_t N_size = BIGNUM_GET_BINARY_SIZE(&ctx->N);
-	if (librist_crypto_srp_hash_2_bignum_padded(N_size, &ctx->N, &ctx->g, k_hash) != 0) {
+	if (srp_hash_uk(ctx->legacy_pad, N_size, &ctx->N, &ctx->g, k_hash) != 0) {
 		ret = -1;
 		goto out;
 	}
@@ -615,7 +640,7 @@ out:
 int librist_crypto_srp_authenticator_verify_m1(struct librist_crypto_srp_authenticator_ctx *ctx, const char *username,  uint8_t *client_m1_buf) {
 	uint8_t u_hash[SHA256_DIGEST_LENGTH];
 	size_t pad = BIGNUM_GET_BINARY_SIZE(&ctx->N);
-	if (librist_crypto_srp_hash_2_bignum_padded(pad, &ctx->A, &ctx->B, u_hash) != 0) {
+	if (srp_hash_uk(ctx->legacy_pad, pad, &ctx->A, &ctx->B, u_hash) != 0) {
 		return -1;
 	}
 
@@ -714,6 +739,7 @@ struct librist_crypto_srp_client_ctx {
 	uint8_t m1[SHA256_DIGEST_LENGTH];
 
 	bool correct_hashing_init;
+	bool legacy_pad;             //pre-0.2.16 unpadded u/k (srp-compat=legacy)
 };
 
 int librist_crypto_srp_client_write_A_bytes(struct librist_crypto_srp_client_ctx *ctx, uint8_t *A_buf, size_t A_buf_len) {
@@ -772,11 +798,11 @@ int librist_crypto_srp_client_handle_B(struct librist_crypto_srp_client_ctx *ctx
 		goto out;
 	}
 
-	//Calculate u = SHA256(PAD(A) | PAD(B))  (RFC 5054)
+	//Calculate u = SHA256(PAD(A) | PAD(B))  (RFC 5054); legacy_pad strips PAD.
 	{
 		uint8_t u_hash[SHA256_DIGEST_LENGTH];
 		size_t u_pad = BIGNUM_GET_BINARY_SIZE(&ctx->N);
-		ret = librist_crypto_srp_hash_2_bignum_padded(u_pad, &ctx->A, &ctx->B, u_hash);
+		ret = srp_hash_uk(ctx->legacy_pad, u_pad, &ctx->A, &ctx->B, u_hash);
 		if (ret != 0)
 			goto out;
 
@@ -793,11 +819,11 @@ int librist_crypto_srp_client_handle_B(struct librist_crypto_srp_client_ctx *ctx
 		}
 	}
 
-	//Calculate k = SHA256(N | PAD(g))  (RFC 5054)
+	//Calculate k = SHA256(PAD(N) | PAD(g))  (RFC 5054); legacy_pad strips PAD.
 	{
 		uint8_t k_hash[SHA256_DIGEST_LENGTH];
 		size_t k_pad = BIGNUM_GET_BINARY_SIZE(&ctx->N);
-		ret = librist_crypto_srp_hash_2_bignum_padded(k_pad, &ctx->N, &ctx->g, k_hash);
+		ret = srp_hash_uk(ctx->legacy_pad, k_pad, &ctx->N, &ctx->g, k_hash);
 		if (ret != 0)
 			goto out;
 
@@ -879,7 +905,7 @@ const uint8_t *librist_crypto_srp_client_get_key(struct librist_crypto_srp_clien
 	return ctx->key;
 }
 
-struct librist_crypto_srp_client_ctx *librist_crypto_srp_client_ctx_create(bool default_ng, uint8_t *N_bytes, size_t N_len, uint8_t *g_bytes, size_t g_len, uint8_t *s_bytes, size_t s_len, bool correct) {
+struct librist_crypto_srp_client_ctx *librist_crypto_srp_client_ctx_create(bool default_ng, uint8_t *N_bytes, size_t N_len, uint8_t *g_bytes, size_t g_len, uint8_t *s_bytes, size_t s_len, bool correct, bool legacy_pad) {
 	if (!s_bytes || s_len == 0 || s_len > 64)
 		return NULL;
 	if (!default_ng) {
@@ -892,6 +918,7 @@ struct librist_crypto_srp_client_ctx *librist_crypto_srp_client_ctx_create(bool 
 		return NULL;
 
 	ctx->correct_hashing_init = correct;
+	ctx->legacy_pad = legacy_pad;
 	BIGNUM_INIT(&ctx->N);
 	BIGNUM_INIT(&ctx->g);
 	BIGNUM_INIT(&ctx->s);

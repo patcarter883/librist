@@ -110,6 +110,9 @@ struct eapsrp_ctx
 	uint8_t *authenticator_bytes_salt;
 
 	bool eapversion3;//EAPv3 signalled. old libRIST used v2, so use this to ensure compat with broken hashing
+
+	bool srp_legacy_pad;         //srp-compat=legacy URL opt-in
+	bool srp_legacy_peer_warned; //one-shot latch for the M1/M2 hint
 };
 
 static inline void eap_tries_inc(struct eapsrp_ctx *ctx)
@@ -265,7 +268,7 @@ static int process_eap_request_srp_challenge(struct eapsrp_ctx *ctx, uint8_t ide
 	}
 	bool use_default_ng = (generator_len == 0);
 	librist_crypto_srp_client_ctx_free(ctx->client_ctx);
-	ctx->client_ctx = librist_crypto_srp_client_ctx_create(use_default_ng, N, N_len, g, generator_len, salt, salt_len, ctx->eapversion3);
+	ctx->client_ctx = librist_crypto_srp_client_ctx_create(use_default_ng, N, N_len, g, generator_len, salt, salt_len, ctx->eapversion3, ctx->srp_legacy_pad);
 	if (ctx->client_ctx == NULL)
 		return EAP_INTERNALERR;
 	uint8_t response[1500] = {0};
@@ -339,6 +342,19 @@ static int process_eap_request_srp_server_validator(struct eapsrp_ctx *ctx, uint
 		return send_eapol_pkt(ctx, EAPOL_TYPE_EAP, EAP_CODE_RESPONSE, identifier, sizeof(*hdr), outpkt, ctx->eapversion3? 3 :2);
 	}
 	//perm failure
+	rist_log_priv2(ctx->config.logging_settings, RIST_LOG_WARN,
+		EAP_LOG_PREFIX"Server M2 verification failed for server@%s\n", ctx->ip_string);
+	/* Advisory hint, latched: see srp-compat note in NEWS for v0.2.18. */
+	if (!ctx->srp_legacy_peer_warned) {
+		ctx->srp_legacy_peer_warned = true;
+		if (ctx->srp_legacy_pad) {
+			rist_log_priv2(ctx->config.logging_settings, RIST_LOG_INFO,
+				EAP_LOG_PREFIX"  Hint: this side is configured for srp-compat=legacy. If the server is running librist 0.2.16+ (PAD-compliant, the default), drop ?srp-compat=legacy on both sides.\n");
+		} else {
+			rist_log_priv2(ctx->config.logging_settings, RIST_LOG_INFO,
+				EAP_LOG_PREFIX"  Hint: if the server is running librist 0.2.15 or earlier, the SRP wire format changed in 0.2.16 for RFC 5054 / TR-06-2 compliance. To interoperate with an older server, add ?srp-compat=legacy on BOTH URLs. Otherwise check the password.\n");
+		}
+	}
 	ctx->authentication_state = EAP_AUTH_STATE_FAILED;
 	ctx->tries = EAP_AUTH_TRIES_PERMANENT;
 
@@ -474,7 +490,7 @@ static int process_eap_response_identity(struct eapsrp_ctx *ctx, size_t len, uin
 		if (verifier_data.default_ng)
 			librist_get_ng_constants(LIBRIST_SRP_NG_DEFAULT, &n_hex, &g_hex);
 
-		auth_ctx = librist_crypto_srp_authenticator_ctx_create(n_hex, g_hex, verifier_data.verifier, verifier_data.verifier_len, verifier_data.salt, verifier_data.salt_len, ctx->eapversion3);
+		auth_ctx = librist_crypto_srp_authenticator_ctx_create(n_hex, g_hex, verifier_data.verifier, verifier_data.verifier_len, verifier_data.salt, verifier_data.salt_len, ctx->eapversion3, ctx->srp_legacy_pad);
 		if (!auth_ctx)
 			goto out;
 		librist_crypto_srp_authenticator_ctx_free(ctx->auth_ctx);
@@ -552,6 +568,19 @@ static int process_eap_response_client_validator(struct eapsrp_ctx *ctx, size_t 
 
 	if (librist_crypto_srp_authenticator_verify_m1(ctx->auth_ctx, ctx->config.username, &pkt[4]) != 0) {
 		rist_log_priv2(ctx->config.logging_settings, RIST_LOG_WARN, EAP_LOG_PREFIX"Authentication failed for %s@%s\n", ctx->config.username, ctx->ip_string);
+		/* Advisory hint, latched: see srp-compat note in NEWS for v0.2.18. */
+		if (!ctx->srp_legacy_peer_warned) {
+			ctx->srp_legacy_peer_warned = true;
+			if (ctx->srp_legacy_pad) {
+				rist_log_priv2(ctx->config.logging_settings, RIST_LOG_INFO,
+					EAP_LOG_PREFIX"  Hint: this side is configured for srp-compat=legacy. If %s is running librist 0.2.16+ (PAD-compliant, the default), drop ?srp-compat=legacy on both sides.\n",
+					ctx->ip_string);
+			} else {
+				rist_log_priv2(ctx->config.logging_settings, RIST_LOG_INFO,
+					EAP_LOG_PREFIX"  Hint: if %s is running librist 0.2.15 or earlier, the SRP wire format changed in 0.2.16 for RFC 5054 / TR-06-2 compliance. To interoperate with an older peer, add ?srp-compat=legacy on BOTH URLs. Otherwise check the password.\n",
+					ctx->ip_string);
+			}
+		}
 		ctx->authentication_state = EAP_AUTH_STATE_FAILED;
 		eap_tries_inc(ctx);
 		int ret = EAP_AUTH_FAILED;
@@ -828,6 +857,7 @@ int eap_clone_ctx(struct eapsrp_ctx *in, struct rist_peer *peer)
 		return -1;
 	}
     memcpy(&ctx->config, &in->config, sizeof(in->config));
+	ctx->srp_legacy_pad = in->srp_legacy_pad;
 	peer->eap_ctx = ctx;
 	ctx->peer = peer;
 	ctx->eapversion3 = true;
@@ -1117,6 +1147,10 @@ int rist_enable_eap_srp_2(struct rist_peer *peer, const char *username, const ch
 		ctx->config.role = EAP_ROLE_AUTHENTICATOR;
 		ctx->config.use_key_as_passphrase = peer->key_tx.password_len == 0;
 		ctx->eapversion3 = true;
+		ctx->srp_legacy_pad = (peer->config.srp_compat_legacy != 0);
+		if (ctx->srp_legacy_pad)
+			rist_log_priv2(ctx->config.logging_settings, RIST_LOG_WARN,
+				EAP_LOG_PREFIX"SRP legacy compat mode ACTIVE on this authenticator (srp-compat=legacy). Wire format is the pre-0.2.16 unpadded form — NOT TR-06-2 / RFC 5054 compliant. For transitional interop only.\n");
 		peer->eap_ctx = ctx;
 		struct rist_peer *child = peer->child;
 		peer->eap_authentication_state = 1;
@@ -1146,8 +1180,12 @@ int rist_enable_eap_srp_2(struct rist_peer *peer, const char *username, const ch
 	ctx->config.role = EAP_ROLE_AUTHENTICATEE;
 	strcpy(ctx->config.username, username);
 	strcpy(ctx->config.password, password);
+	ctx->srp_legacy_pad = (peer->config.srp_compat_legacy != 0);
 	peer->eap_ctx = ctx;
 	rist_log_priv2(ctx->config.logging_settings, RIST_LOG_INFO, EAP_LOG_PREFIX"EAP Authentication enabled, role = authenticatee\n");
+	if (ctx->srp_legacy_pad)
+		rist_log_priv2(ctx->config.logging_settings, RIST_LOG_WARN,
+			EAP_LOG_PREFIX"SRP legacy compat mode ACTIVE on this client (srp-compat=legacy). Wire format is the pre-0.2.16 unpadded form — NOT TR-06-2 / RFC 5054 compliant. For transitional interop only.\n");
 	ctx->eapversion3 = true;
 	if (!peer->multicast_receiver)
 		_librist_proto_eap_start(ctx);

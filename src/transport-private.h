@@ -6,6 +6,18 @@
 #ifndef RIST_TRANSPORT_PRIVATE_H
 #define RIST_TRANSPORT_PRIVATE_H
 
+/* struct pollfd for the rist_transport_poll() prototype below, gated on
+ * _WIN32_WINNT >= 0x0600 in mingw-w64.  Mirrors src/libevsocket.c. */
+#ifdef _WIN32
+# if !defined(_WIN32_WINNT) || _WIN32_WINNT < 0x0600
+#  undef _WIN32_WINNT
+#  define _WIN32_WINNT 0x0600
+# endif
+# include <winsock2.h>
+#else
+# include <poll.h>
+#endif
+
 #include "common/attributes.h"
 #include "librist/transport.h"
 

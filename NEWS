@@ -20,6 +20,21 @@ Bug Fixes:
     values (11 and 35) when a custom transport_ops backend signals
     "no data ready", protecting cross-compile environments where the
     EAGAIN macro can resolve differently across translation units.
+  - librist/transport.h now defines ssize_t on Windows (#214), so
+    downstream consumers no longer have to provide their own typedef.
+
+Interoperability note (SRP):
+  - 0.2.16 made TLS-SRP RFC 5054 / TR-06-2 compliant by adding the
+    PAD operation to the u and k hash inputs.  As a side effect,
+    SRP-authenticated peers running 0.2.15 or earlier (which omitted
+    the PAD) will not handshake with 0.2.16+.  Both ends must run
+    0.2.16+.  No action is required for non-SRP deployments.
+
+CI / Test Coverage:
+  - srp_unit_test now runs in test-ubuntu (libcmocka-dev added to
+    the CI image), closing the gap that hid the SRP fixture drift
+    reported in #215.  Test fixtures regenerated for the PAD-compliant
+    SRP exchange against the 2048-bit RFC 5054 group.
 
 Tools:
   - ristsender: new --blind-send option.  Decouples the sender from

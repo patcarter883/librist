@@ -19,10 +19,11 @@
 #define DEBUG_USE_EXAMPLE_CONSTANTS 1
 
 #if HAVE_MBEDTLS
-// musl's sched.h includes a prototype for calloc, so we need to make
-// sure it's already been included before we redefine it to something
-// that won't expand to a valid prototype.
+// musl's sched.h declares calloc, so include it before we redefine
+// calloc to the cmocka allocator (POSIX-only header).
+#ifndef _WIN32
 #include <sched.h>
+#endif
 
 #define malloc(size) _test_malloc(size, __FILE__, __LINE__)
 #define calloc(num, size) _test_calloc(num, size, __FILE__, __LINE__)

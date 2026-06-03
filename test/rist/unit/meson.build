@@ -2,7 +2,10 @@ cmocka = dependency('cmocka', required: false, fallback: ['cmocka', 'cmocka_dep'
 
 if cmocka.found()
 	if have_srp
-		srp_unit_deps = [threads, cmocka, crypto_deps]
+		# stdatomic_dependency mirrors the main librist target so the
+		# srp_unit translation units pick up the compat/msvc shim when
+		# MSVC's <stdatomic.h> requires /experimental:c11atomics.
+		srp_unit_deps = [threads, cmocka, crypto_deps, stdatomic_dependency]
 		if host_machine.system() == 'windows'
 			srp_unit_deps += cc.find_library('bcrypt')  # random.c calls BCryptGenRandom
 		endif

@@ -61,6 +61,10 @@ static uint8_t  g_last_link_quality = 0xFFu;       /* sentinel: forces first emi
 static uint32_t g_last_rtt          = 0xFFFFFFFFu; /* sentinel: forces first emit */
 static struct rist_ctx  *g_lan_receiver_ctx  = NULL;
 static struct rist_peer *g_lan_receiver_peer = NULL;
+/* Quality of the encoder->rist2rist (input) leg, from RIST_STATS_RECEIVER_FLOW.
+ * The sender-peer quality only covers the rist2rist->downstream legs, so loss on
+ * the input leg is invisible there; we report the worst of the two. */
+static double   g_lan_recv_quality  = 100.0;
 
 struct rist_sender_args {
 	char* cname;
@@ -72,6 +76,7 @@ struct rist_sender_args {
 	uint32_t flow_id;
 	int statsinterval;
 	int npd_enabled;
+	enum rist_profile profile;
 };
 
 struct rist_cb_arg {
@@ -103,6 +108,7 @@ static struct option long_options[] = {
 { "verbose-level",   required_argument, NULL, 'v' },
 { "remote-logging",  required_argument, NULL, 'r' },
 { "profile",         required_argument, NULL, 'p' },
+{ "out-profile",     required_argument, NULL, 'P' },
 { "npd",             no_argument,       NULL, 'n' },
 #if HAVE_SRP_SUPPORT
 { "srpfile",         required_argument, NULL, 'F' },
@@ -130,6 +136,7 @@ const char help_str[] = "Where OPTIONS are:\n"
 "       -v | --verbose-level value                | To disable logging: -1, log levels match syslog levels   |\n"
 "       -r | --remote-logging IP:PORT             | Send logs and stats to this IP:PORT using udp messages   |\n"
 "       -p | --profile number                     | Rist receive profile (0 = simple, 1 = main, 2 = advanced)|\n"
+"       -P | --out-profile number                 | Rist output profile  (0 = simple, 1 = main, 2 = advanced)|\n"
 "       -n | --npd                                | Enable Null Packet Deletion on output                    |\n"
 #if HAVE_SRP_SUPPORT
 "       -F | --srpfile filepath                   | When in listening mode, use this file to hold the list   |\n"
@@ -208,12 +215,76 @@ static int cb_recv_oob(void *arg, const struct rist_oob_block *oob_block)
 	return 0;
 }
 
-static void wan_telemetry_update(const struct rist_stats_sender_peer *sp)
+static void telemetry_emit(void)
 {
 	if (!g_lan_receiver_ctx || !g_lan_receiver_peer) {
 		return;
 	}
 
+	/* Aggregate quality across all known sender (downstream/WAN) peers. */
+	double   weighted_q_sum = 0.0;
+	double   q_sum          = 0.0;
+	size_t   total_bw       = 0;
+	uint32_t max_rtt        = 0;
+	int      n_peers        = 0;
+	for (int i = 0; i < MAX_SENDER_PEERS; i++) {
+		if (!g_sender_peers[i].in_use) continue;
+		n_peers++;
+		weighted_q_sum += g_sender_peers[i].quality * (double)g_sender_peers[i].bandwidth;
+		q_sum          += g_sender_peers[i].quality;
+		total_bw       += g_sender_peers[i].bandwidth;
+		if (g_sender_peers[i].rtt > max_rtt) {
+			max_rtt = g_sender_peers[i].rtt;
+		}
+	}
+
+	/* Output-leg quality (100 until a downstream peer reports in). */
+	double q_out = 100.0;
+	if (n_peers > 0) {
+		q_out = (total_bw > 0) ? (weighted_q_sum / (double)total_bw)
+		                       : (q_sum / (double)n_peers);
+	}
+
+	/* Report the worst of the input (encoder->rist2rist) and output legs, so
+	 * loss on EITHER leg pulls the encoder's WAN quality down. */
+	double q_final = (q_out < g_lan_recv_quality) ? q_out : g_lan_recv_quality;
+	if (q_final < 0.0)   q_final = 0.0;
+	if (q_final > 100.0) q_final = 100.0;
+	uint8_t  link_quality = (uint8_t)(q_final + 0.5);
+	uint32_t rtt          = max_rtt;
+
+	int quality_changed = (link_quality != g_last_link_quality);
+	int rtt_changed     = (abs((int)rtt - (int)g_last_rtt) > RTT_HYSTERESIS_MS);
+	if (!quality_changed && !rtt_changed) {
+		return;
+	}
+
+	struct wan_telemetry_t telemetry;
+	telemetry.link_quality   = link_quality;
+	telemetry.worst_case_rtt = htonl(rtt);
+
+	/* The encoder expects the RAW 5-byte wan_telemetry struct on the wire — it
+	 * rejects any OOB payload whose size != sizeof(wan_telemetry) (see
+	 * open-broadcast-encoder source/lib/lib.h / source/main.cpp rist_oob_cb).
+	 * Do NOT wrap it in the IP/API envelope used for auth messages. */
+	struct rist_oob_block oob_block = {
+		.peer        = g_lan_receiver_peer,
+		.payload     = &telemetry,
+		.payload_len = sizeof(telemetry),
+		.ts_ntp      = 0,
+	};
+	rist_oob_write(g_lan_receiver_ctx, &oob_block);
+
+	g_last_link_quality = link_quality;
+	g_last_rtt          = rtt;
+
+	rist_log(&logging_settings, RIST_LOG_DEBUG,
+		"telemetry: q=%u (out=%.1f in=%.1f) rtt=%u ms peers=%d\n",
+		link_quality, q_out, g_lan_recv_quality, rtt, n_peers);
+}
+
+static void wan_telemetry_update(const struct rist_stats_sender_peer *sp)
+{
 	/* Find or insert this peer in the per-peer cache. */
 	int slot = -1;
 	int first_free = -1;
@@ -238,60 +309,7 @@ static void wan_telemetry_update(const struct rist_stats_sender_peer *sp)
 	g_sender_peers[slot].rtt       = sp->rtt;
 	g_sender_peers[slot].bandwidth = sp->bandwidth;
 
-	/* Aggregate across all known sender peers. */
-	double   weighted_q_sum = 0.0;
-	double   q_sum          = 0.0;
-	size_t   total_bw       = 0;
-	uint32_t max_rtt        = 0;
-	int      n_peers        = 0;
-	for (int i = 0; i < MAX_SENDER_PEERS; i++) {
-		if (!g_sender_peers[i].in_use) continue;
-		n_peers++;
-		weighted_q_sum += g_sender_peers[i].quality * (double)g_sender_peers[i].bandwidth;
-		q_sum          += g_sender_peers[i].quality;
-		total_bw       += g_sender_peers[i].bandwidth;
-		if (g_sender_peers[i].rtt > max_rtt) {
-			max_rtt = g_sender_peers[i].rtt;
-		}
-	}
-	if (n_peers == 0) return;
-
-	double q_agg = (total_bw > 0) ? (weighted_q_sum / (double)total_bw)
-	                              : (q_sum / (double)n_peers);
-	if (q_agg < 0.0)   q_agg = 0.0;
-	if (q_agg > 100.0) q_agg = 100.0;
-	uint8_t  link_quality = (uint8_t)(q_agg + 0.5);
-	uint32_t rtt          = max_rtt;
-
-	int quality_changed = (link_quality != g_last_link_quality);
-	int rtt_changed     = (abs((int)rtt - (int)g_last_rtt) > RTT_HYSTERESIS_MS);
-	if (!quality_changed && !rtt_changed) {
-		return;
-	}
-
-	struct wan_telemetry_t telemetry;
-	telemetry.link_quality   = link_quality;
-	telemetry.worst_case_rtt = htonl(rtt);
-
-	/* IP envelope src/dest are cosmetic — the receiver dispatches on iph_ident. */
-	uint16_t buffer[64];
-	int payload_len = oob_build_api_payload_ident(buffer, "0.0.0.0", "0.0.0.0",
-	                                              &telemetry, (int)sizeof(telemetry),
-	                                              RIST_OOB_API_IP_IDENT_TELEMETRY);
-
-	struct rist_oob_block oob_block = {
-		.peer        = g_lan_receiver_peer,
-		.payload     = buffer,
-		.payload_len = (size_t)payload_len,
-		.ts_ntp      = 0,
-	};
-	rist_oob_write(g_lan_receiver_ctx, &oob_block);
-
-	g_last_link_quality = link_quality;
-	g_last_rtt          = rtt;
-
-	rist_log(&logging_settings, RIST_LOG_DEBUG,
-		"telemetry: q=%u rtt=%u ms peers=%d\n", link_quality, rtt, n_peers);
+	telemetry_emit();
 }
 
 static int cb_stats(void *arg, const struct rist_stats *stats_container) {
@@ -305,6 +323,14 @@ static int cb_stats(void *arg, const struct rist_stats *stats_container) {
 #endif
 	if (stats_container->stats_type == RIST_STATS_SENDER_PEER) {
 		wan_telemetry_update(&stats_container->stats.sender_peer);
+	} else if (stats_container->stats_type == RIST_STATS_RECEIVER_FLOW) {
+		/* Quality of the encoder->rist2rist (input) leg. Captures loss the
+		 * downstream sender-peer stats can't see; folded into the telemetry. */
+		double q = stats_container->stats.receiver_flow.quality;
+		if (q < 0.0)   q = 0.0;
+		if (q > 100.0) q = 100.0;
+		g_lan_recv_quality = q;
+		telemetry_emit();
 	}
 	rist_stats_free(stats_container);
 	return 0;
@@ -315,7 +341,7 @@ static struct rist_ctx* setup_rist_sender(struct rist_sender_args *setup) {
 	printf("CName: %s\n", setup->cname);
 	printf("Outurl: %s\n", setup->outputurl);
 	int rist;
-	if (rist_sender_create(&ctx, RIST_PROFILE_MAIN, setup->flow_id, &logging_settings) != 0) {
+	if (rist_sender_create(&ctx, setup->profile, setup->flow_id, &logging_settings) != 0) {
 		rist_log(&logging_settings, RIST_LOG_ERROR, "Could not create rist sender context\n");
 		exit(1);
 	}
@@ -467,6 +493,9 @@ int main (int argc, char **argv) {
 	char *remote_log_address = NULL;
 	int exitcode = 0;
 	enum rist_profile profile = RIST_PROFILE_SIMPLE;
+	// Output (downstream) profile, independent of the input receive profile.
+	// Default to advanced so it matches an advanced-profile downstream receiver.
+	enum rist_profile out_profile = RIST_PROFILE_ADVANCED;
 #ifdef _WIN32
 #define STDERR_FILENO 2
 	signal(SIGINT, intHandler);
@@ -495,9 +524,9 @@ int main (int argc, char **argv) {
 	 * return codes (see long_options). */
 	const char *short_opts =
 #if HAVE_SRP_SUPPORT
-		"r:i:o:s:e:N:v:S:p:F:nMhu";
+		"r:i:o:s:e:N:v:S:p:P:F:nMhu";
 #else
-		"r:i:o:s:e:N:v:S:p:nMhu";
+		"r:i:o:s:e:N:v:S:p:P:nMhu";
 #endif
 	while ((c = getopt_long(argc, argv, short_opts, long_options, &option_index)) != -1) {
 		switch (c) {
@@ -526,6 +555,9 @@ int main (int argc, char **argv) {
 			break;
 		case 'p':
 			profile = atoi(optarg);
+			break;
+		case 'P':
+			out_profile = atoi(optarg);
 			break;
 		case 'n':
 			client_args.npd_enabled = 1;
@@ -645,6 +677,15 @@ usage:
 		goto out;
 	}
 
+	/* Enable OOB on the receiver (encoder-facing) context. Without this,
+	 * rist_oob_write() back to the encoder — the auth ack in cb_auth_connect and
+	 * the WAN telemetry in wan_telemetry_update — fails with "OOB not enabled". */
+	if (rist_oob_callback_set(receiver_ctx, cb_recv_oob, receiver_ctx) == -1) {
+		rist_log(&logging_settings, RIST_LOG_ERROR, "Could not enable out-of-band data on receiver\n");
+		exitcode = 1;
+		goto out;
+	}
+
 	struct rist_peer_config app_peer_config = {
 		.version = RIST_PEER_CONFIG_VERSION,
 		.virt_dst_port = RIST_DEFAULT_VIRT_DST_PORT,
@@ -713,6 +754,7 @@ usage:
 			goto out;
 		}
 	}
+	client_args.profile = out_profile;
 	cb_arg.sender_ctx = setup_rist_sender(&client_args);
 	if (rist_start(receiver_ctx)) {
 		rist_log(&logging_settings, RIST_LOG_ERROR, "Could not start rist receiver\n");

@@ -225,7 +225,7 @@ for (size_t c=0; c < ctx->cnt; c++) { \
 		if (ctx->single_stat_point) { \
 			offset += snprintf(out + offset * (out != NULL), remaining, "\n"); \
 		} else { \
-			offset += snprintf(out + offset * (out != NULL), remaining, "%"PRIu64"\n", s->container[i].updated); \
+			offset += snprintf(out + offset * (out != NULL), remaining, " %"PRIu64"\n", s->container[i].updated); \
 		} \
 		remaining = MAX((out_size - offset), 0); \
 	} \

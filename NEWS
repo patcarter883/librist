@@ -24,6 +24,9 @@ Bug Fixes:
     EAGAIN macro can resolve differently across translation units.
   - librist/transport.h now defines ssize_t on Windows (#214), so
     downstream consumers no longer have to provide their own typedef.
+  - Prometheus exporter: counter rows in multiple_metric_datapoints
+    mode now have a space between the value and the timestamp.
+    Affected every existing _total row.
 
 SRP interoperability:
   - 0.2.16 made TLS-SRP RFC 5054 / TR-06-2 compliant by adding the
@@ -65,6 +68,10 @@ Tools:
     fire-and-forget broadcast topologies (multicast output in
     simple/main/advanced profile, or ristsender used as a relay /
     fan-out in front of non-RIST consumers).
+  - Prometheus exporter: new per-peer receiver metric block
+    rist_receiver_peer_* with labels {peer_id, flow_id,
+    receiver_id}, mirroring rist_sender_peer_*.  Auto-registered
+    from rist_stats_receiver_flow.peers[].
 
 
 Changes for 0.2.17:

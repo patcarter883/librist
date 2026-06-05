@@ -714,6 +714,7 @@ RIST_PRIV size_t rist_best_rtt_index(struct rist_flow *f);
 RIST_PRIV struct rist_buffer *rist_new_buffer(struct rist_common_ctx *ctx, const void *buf, size_t len, uint8_t type, uint32_t seq, uint64_t source_time, uint16_t src_port, uint16_t dst_port);
 RIST_PRIV void free_rist_buffer(struct rist_common_ctx *ctx, struct rist_buffer *b);
 RIST_PRIV void rist_calculate_bitrate(size_t len, struct rist_bandwidth_estimation *bw);
+RIST_PRIV void rist_refresh_flow_bitrate(struct rist_bandwidth_estimation *bw);
 RIST_PRIV void empty_receiver_queue(struct rist_flow *f, struct rist_common_ctx *ctx);
 RIST_PRIV void rist_flush_missing_flow_queue(struct rist_flow *flow);
 

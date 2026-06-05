@@ -1631,6 +1631,39 @@ void rist_calculate_bitrate(size_t len, struct rist_bandwidth_estimation *bw)
 	}
 }
 
+/* Recompute bw->bitrate using zero new bytes so the value decays to
+ * zero when the stats tick fires but no packets have arrived on this
+ * counter since the last tick. Mirrors what rist_calculate_bitrate(0,
+ * ...) does for peer-side counters, deliberately skipping the per-flow
+ * inter-packet-spacing bookkeeping that lives in
+ * rist_calculate_flow_bitrate(). */
+void rist_refresh_flow_bitrate(struct rist_bandwidth_estimation *bw)
+{
+	if (!bw->last_bitrate_calctime)
+		return;
+
+	struct timeval tv;
+	gettimeofday(&tv, NULL);
+	uint64_t now = (uint64_t)tv.tv_sec * 1000000;
+	now += tv.tv_usec;
+
+	uint64_t time_fast = now - bw->last_bitrate_calctime_fast;
+	if (time_fast >= 100000 /* 100 ms */) {
+		bw->bitrate_fast = (size_t)((8 * bw->bytes_fast * 1000000) / time_fast);
+		bw->eight_times_bitrate_fast += bw->bitrate_fast - bw->eight_times_bitrate_fast / 8;
+		bw->last_bitrate_calctime_fast = now;
+		bw->bytes_fast = 0;
+	}
+
+	uint64_t time = now - bw->last_bitrate_calctime;
+	if (time >= 1000000 /* 1 second */) {
+		bw->bitrate = (size_t)((8 * bw->bytes * 1000000) / time);
+		bw->eight_times_bitrate += bw->bitrate - bw->eight_times_bitrate / 8;
+		bw->last_bitrate_calctime = now;
+		bw->bytes = 0;
+	}
+}
+
 static void rist_calculate_flow_bitrate(struct rist_flow *flow, size_t len, struct rist_bandwidth_estimation *bw)
 {
 	struct timeval tv;

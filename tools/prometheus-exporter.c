@@ -73,6 +73,7 @@ struct rist_prometheus_client_flow_stats {
 		double rist_client_flow_min_iat_seconds;
 		double rist_client_flow_cur_iat_seconds;
 		double rist_client_flow_max_iat_seconds;
+		double rist_client_flow_avg_buffer_time_seconds;
 		double rist_client_flow_rtt_seconds;
 		double rist_client_flow_quality_ratio;
 	} container[16];
@@ -265,6 +266,7 @@ static int rist_prometheus_format_client_flow_stats(struct rist_prometheus_stats
 	PROMETHEUS_GAUGE_PRINT_CLIENT(rist_client_flow_min_iat_seconds, "Minimum inter arrival time in seconds", "seconds")
 	PROMETHEUS_GAUGE_PRINT_CLIENT(rist_client_flow_cur_iat_seconds, "Current inter arrival time in seconds", "seconds")
 	PROMETHEUS_GAUGE_PRINT_CLIENT(rist_client_flow_max_iat_seconds, "Maximum inter arrival time in seconds", "seconds")
+	PROMETHEUS_GAUGE_PRINT_CLIENT(rist_client_flow_avg_buffer_time_seconds, "Average receiver buffer duration in seconds", "seconds")
 	PROMETHEUS_GAUGE_PRINT_CLIENT(rist_client_flow_rtt_seconds, "Current RTT in seconds", "seconds");
 	PROMETHEUS_GAUGE_PRINT_CLIENT(rist_client_flow_quality_ratio, "Current connection quality ratio", "ratio");
 	return offset;
@@ -375,6 +377,8 @@ void rist_prometheus_handle_client_stats(struct rist_prometheus_stats *ctx, cons
 	s->container[s->container_offset].rist_client_flow_min_iat_seconds = ((double)1 / (double)1000000) * stats->min_inter_packet_spacing;
 	s->container[s->container_offset].rist_client_flow_cur_iat_seconds = ((double)1 / (double)1000000) * stats->cur_inter_packet_spacing;
 	s->container[s->container_offset].rist_client_flow_max_iat_seconds = ((double)1 / (double)1000000) * stats->max_inter_packet_spacing;
+	/* avg_buffer_time is reported in milliseconds (see rist_stats_receiver_flow in librist/stats.h). */
+	s->container[s->container_offset].rist_client_flow_avg_buffer_time_seconds = ((double)stats->avg_buffer_time) / 1000.0;
 	s->container[s->container_offset].rist_client_flow_rtt_seconds = ((double)1 / (double)1000) * stats->rtt;
 	s->container[s->container_offset].rist_client_flow_quality_ratio = (double)stats->quality / 100.0;
 	s->container[s->container_offset].updated = now;

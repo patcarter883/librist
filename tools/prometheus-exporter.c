@@ -73,6 +73,7 @@ struct rist_prometheus_client_flow_stats {
 		double rist_client_flow_min_iat_seconds;
 		double rist_client_flow_cur_iat_seconds;
 		double rist_client_flow_max_iat_seconds;
+		double rist_client_flow_avg_buffer_time_seconds;
 		double rist_client_flow_rtt_seconds;
 		double rist_client_flow_quality_ratio;
 	} container[16];
@@ -118,6 +119,35 @@ struct rist_prometheus_sender_peer_stats {
 	bool from_callback;
 };
 
+struct rist_prometheus_receiver_peer_stats {
+	uint32_t peer_id;
+	uint32_t flow_id;
+	uint64_t receiver_id;
+	char *tags;
+	uint64_t created;
+	uint64_t last_updated;
+
+	struct {
+		double rist_receiver_peer_received_data_packets;
+		double rist_receiver_peer_received_bytes;
+		double rist_receiver_peer_received_rtcp_packets;
+		double rist_receiver_peer_sent_rtcp_packets;
+	} counters;
+
+	struct {
+		uint64_t updated;
+		double rist_receiver_peer_bandwidth_bps;
+		double rist_receiver_peer_avg_bandwidth_bps;
+		double rist_receiver_peer_received_data_packets;
+		double rist_receiver_peer_received_bytes;
+		double rist_receiver_peer_received_rtcp_packets;
+		double rist_receiver_peer_sent_rtcp_packets;
+		double rist_receiver_peer_rtt_seconds;
+		double rist_receiver_peer_avg_rtt_seconds;
+	} container[16];
+	int container_count;
+	int container_offset;
+};
 
 struct rist_prometheus_stats {
 	uint64_t last_cleanup;
@@ -134,6 +164,8 @@ struct rist_prometheus_stats {
 	size_t client_cnt;
 	struct rist_prometheus_sender_peer_stats **sender_peers;
 	size_t sender_peer_cnt;
+	struct rist_prometheus_receiver_peer_stats **receiver_peers;
+	size_t receiver_peer_cnt;
 #if HAVE_LIBMICROHTTPD
 	struct MHD_Daemon *httpd;
 #endif
@@ -194,7 +226,7 @@ for (size_t c=0; c < ctx->cnt; c++) { \
 		if (ctx->single_stat_point) { \
 			offset += snprintf(out + offset * (out != NULL), remaining, "\n"); \
 		} else { \
-			offset += snprintf(out + offset * (out != NULL), remaining, "%"PRIu64"\n", s->container[i].updated); \
+			offset += snprintf(out + offset * (out != NULL), remaining, " %"PRIu64"\n", s->container[i].updated); \
 		} \
 		remaining = MAX((out_size - offset), 0); \
 	} \
@@ -208,6 +240,9 @@ for (size_t c=0; c < ctx->cnt; c++) { \
 
 #define PROMETHEUS_GAUGE_PRINT_SENDER_PEER(name, help, unit) PROMETHEUS_GAUGE_PRINT_R(name, help, unit, rist_prometheus_sender_peer_stats, sender_peers, sender_peer_cnt)
 #define PROMETHEUS_COUNTER_PRINT_SENDER_PEER(name, help, unit) PROMETHEUS_COUNTER_PRINT_R(name, help, unit, rist_prometheus_sender_peer_stats, sender_peers, sender_peer_cnt)
+
+#define PROMETHEUS_GAUGE_PRINT_RECEIVER_PEER(name, help, unit) PROMETHEUS_GAUGE_PRINT_R(name, help, unit, rist_prometheus_receiver_peer_stats, receiver_peers, receiver_peer_cnt)
+#define PROMETHEUS_COUNTER_PRINT_RECEIVER_PEER(name, help, unit) PROMETHEUS_COUNTER_PRINT_R(name, help, unit, rist_prometheus_receiver_peer_stats, receiver_peers, receiver_peer_cnt)
 
 
 static int rist_prometheus_format_client_flow_stats(struct rist_prometheus_stats *ctx, char *out, int out_size) {
@@ -231,6 +266,7 @@ static int rist_prometheus_format_client_flow_stats(struct rist_prometheus_stats
 	PROMETHEUS_GAUGE_PRINT_CLIENT(rist_client_flow_min_iat_seconds, "Minimum inter arrival time in seconds", "seconds")
 	PROMETHEUS_GAUGE_PRINT_CLIENT(rist_client_flow_cur_iat_seconds, "Current inter arrival time in seconds", "seconds")
 	PROMETHEUS_GAUGE_PRINT_CLIENT(rist_client_flow_max_iat_seconds, "Maximum inter arrival time in seconds", "seconds")
+	PROMETHEUS_GAUGE_PRINT_CLIENT(rist_client_flow_avg_buffer_time_seconds, "Average receiver buffer duration in seconds", "seconds")
 	PROMETHEUS_GAUGE_PRINT_CLIENT(rist_client_flow_rtt_seconds, "Current RTT in seconds", "seconds");
 	PROMETHEUS_GAUGE_PRINT_CLIENT(rist_client_flow_quality_ratio, "Current connection quality ratio", "ratio");
 	return offset;
@@ -249,6 +285,22 @@ static int rist_prometheus_format_sender_peer_stats(struct rist_prometheus_stats
 	PROMETHEUS_GAUGE_PRINT_SENDER_PEER(rist_sender_peer_received_packets, "Total number of packets received (rtcp)", "packets")
 	PROMETHEUS_GAUGE_PRINT_SENDER_PEER(rist_sender_peer_rtt_seconds, "Current RTT in seconds", "seconds");
 	PROMETHEUS_GAUGE_PRINT_SENDER_PEER(rist_sender_peer_quality_ratio, "Current connection quality ratio", "ratio");
+	return offset;
+}
+
+static int rist_prometheus_format_receiver_peer_stats(struct rist_prometheus_stats *ctx, char *out, int out_size) {
+	if (ctx->receiver_peer_cnt == 0)
+		return 0;
+	int offset = 0;
+	int remaining = out_size;
+	PROMETHEUS_GAUGE_PRINT_RECEIVER_PEER(rist_receiver_peer_bandwidth_bps, "The current bandwidth received from the peer", "bps")
+	PROMETHEUS_GAUGE_PRINT_RECEIVER_PEER(rist_receiver_peer_avg_bandwidth_bps, "The average bandwidth received from the peer", "bps")
+	PROMETHEUS_COUNTER_PRINT_RECEIVER_PEER(rist_receiver_peer_received_data_packets, "Total number of data packets received from the peer", "packets")
+	PROMETHEUS_COUNTER_PRINT_RECEIVER_PEER(rist_receiver_peer_received_bytes, "Total number of payload bytes received from the peer", "bytes")
+	PROMETHEUS_COUNTER_PRINT_RECEIVER_PEER(rist_receiver_peer_received_rtcp_packets, "Total number of RTCP packets received from the peer", "packets")
+	PROMETHEUS_COUNTER_PRINT_RECEIVER_PEER(rist_receiver_peer_sent_rtcp_packets, "Total number of RTCP packets sent to the peer", "packets")
+	PROMETHEUS_GAUGE_PRINT_RECEIVER_PEER(rist_receiver_peer_rtt_seconds, "Current RTT to the peer in seconds", "seconds");
+	PROMETHEUS_GAUGE_PRINT_RECEIVER_PEER(rist_receiver_peer_avg_rtt_seconds, "Average RTT to the peer in seconds", "seconds");
 	return offset;
 }
 
@@ -325,6 +377,8 @@ void rist_prometheus_handle_client_stats(struct rist_prometheus_stats *ctx, cons
 	s->container[s->container_offset].rist_client_flow_min_iat_seconds = ((double)1 / (double)1000000) * stats->min_inter_packet_spacing;
 	s->container[s->container_offset].rist_client_flow_cur_iat_seconds = ((double)1 / (double)1000000) * stats->cur_inter_packet_spacing;
 	s->container[s->container_offset].rist_client_flow_max_iat_seconds = ((double)1 / (double)1000000) * stats->max_inter_packet_spacing;
+	/* avg_buffer_time is reported in milliseconds (see rist_stats_receiver_flow in librist/stats.h). */
+	s->container[s->container_offset].rist_client_flow_avg_buffer_time_seconds = ((double)stats->avg_buffer_time) / 1000.0;
 	s->container[s->container_offset].rist_client_flow_rtt_seconds = ((double)1 / (double)1000) * stats->rtt;
 	s->container[s->container_offset].rist_client_flow_quality_ratio = (double)stats->quality / 100.0;
 	s->container[s->container_offset].updated = now;
@@ -337,6 +391,64 @@ void rist_prometheus_handle_client_stats(struct rist_prometheus_stats *ctx, cons
 	} else {
 		s->container_offset = 1;
 		s->container_count = 1;
+	}
+
+	for (size_t pi = 0; pi < stats->peer_count; pi++) {
+		const struct rist_stats_receiver_peer *pstats = &stats->peers[pi];
+		struct rist_prometheus_receiver_peer_stats *ps = NULL;
+		for (size_t i = 0; i < ctx->receiver_peer_cnt; i++) {
+			if (ctx->receiver_peers[i]->peer_id == pstats->peer_id &&
+			    ctx->receiver_peers[i]->flow_id == stats->flow_id &&
+			    ctx->receiver_peers[i]->receiver_id == receiver_id) {
+				ps = ctx->receiver_peers[i];
+				break;
+			}
+		}
+		if (ps == NULL) {
+			int res = snprintf(NULL, 0, "{%speer_id=\"%"PRIu32"\",flow_id=\"%"PRIu32"\",receiver_id=\"%"PRIu64"\"}", ctx->tags, pstats->peer_id, stats->flow_id, receiver_id);
+			if (res < 0)
+				continue;
+			size_t len = (size_t)res + 1;
+			if (ctx->receiver_peers == NULL) {
+				ctx->receiver_peers = malloc(sizeof(*ctx->receiver_peers));
+			} else {
+				struct rist_prometheus_receiver_peer_stats **tmp = realloc(ctx->receiver_peers, sizeof(*ctx->receiver_peers) * (ctx->receiver_peer_cnt + 1));
+				if (tmp == NULL) {
+					fprintf(stderr, "failed to realloc aborting\n");
+					abort();
+				}
+				ctx->receiver_peers = tmp;
+			}
+			ctx->receiver_peers[ctx->receiver_peer_cnt] = calloc(1, sizeof(*ctx->receiver_peers[ctx->receiver_peer_cnt]));
+			ps = ctx->receiver_peers[ctx->receiver_peer_cnt];
+			ps->peer_id = pstats->peer_id;
+			ps->flow_id = stats->flow_id;
+			ps->receiver_id = receiver_id;
+			ps->created = now;
+			ps->tags = calloc(1, len);
+			res = snprintf(ps->tags, len, "{%speer_id=\"%"PRIu32"\",flow_id=\"%"PRIu32"\",receiver_id=\"%"PRIu64"\"}", ctx->tags, ps->peer_id, ps->flow_id, ps->receiver_id);
+			assert(res >= 0);
+			ctx->receiver_peer_cnt++;
+		}
+		ps->container[ps->container_offset].rist_receiver_peer_bandwidth_bps = (double)pstats->bandwidth;
+		ps->container[ps->container_offset].rist_receiver_peer_avg_bandwidth_bps = (double)pstats->avg_bandwidth;
+		ps->container[ps->container_offset].rist_receiver_peer_received_data_packets = ps->counters.rist_receiver_peer_received_data_packets += (double)pstats->received_data;
+		ps->container[ps->container_offset].rist_receiver_peer_received_bytes = ps->counters.rist_receiver_peer_received_bytes += (double)pstats->received_bytes;
+		ps->container[ps->container_offset].rist_receiver_peer_received_rtcp_packets = ps->counters.rist_receiver_peer_received_rtcp_packets += (double)pstats->received_rtcp;
+		ps->container[ps->container_offset].rist_receiver_peer_sent_rtcp_packets = ps->counters.rist_receiver_peer_sent_rtcp_packets += (double)pstats->sent_rtcp;
+		ps->container[ps->container_offset].rist_receiver_peer_rtt_seconds = ((double)1 / (double)1000) * (double)pstats->rtt;
+		ps->container[ps->container_offset].rist_receiver_peer_avg_rtt_seconds = ((double)1 / (double)1000) * pstats->avg_rtt;
+		ps->container[ps->container_offset].updated = now;
+		ps->last_updated = now;
+		if (!ctx->single_stat_point) {
+			ps->container_offset = (ps->container_offset + 1) % 16;
+			if (ps->container_count < 16) {
+				ps->container_count++;
+			}
+		} else {
+			ps->container_offset = 1;
+			ps->container_count = 1;
+		}
 	}
 }
 
@@ -576,6 +688,32 @@ static void rist_prometheus_cleanup_stale_locked(struct rist_prometheus_stats *c
 				}
 			}
 		}
+		{//clean expired receiver peers
+			size_t receiver_peer_cnt_start = ctx->receiver_peer_cnt;
+			for (size_t i = 0; i < ctx->receiver_peer_cnt;) {
+				if (ctx->receiver_peers[i]->last_updated < now && (now - ctx->receiver_peers[i]->last_updated) > 15) {
+					free(ctx->receiver_peers[i]->tags);
+					free(ctx->receiver_peers[i]);
+					ctx->receiver_peers[i] = ctx->receiver_peers[ctx->receiver_peer_cnt - 1];
+					ctx->receiver_peer_cnt--;
+					continue;
+				}
+				i++;
+			}
+			if (receiver_peer_cnt_start != ctx->receiver_peer_cnt) {
+				if (ctx->receiver_peer_cnt == 0) {
+					free(ctx->receiver_peers);
+					ctx->receiver_peers = NULL;
+				} else {
+					struct rist_prometheus_receiver_peer_stats **tmp = realloc(ctx->receiver_peers, sizeof(*ctx->receiver_peers) * ctx->receiver_peer_cnt);
+					if (tmp == NULL) {
+						fprintf(stderr, "realloc failed aborting\n");
+						abort();
+					}
+					ctx->receiver_peers = tmp;
+				}
+			}
+		}
 		ctx->last_cleanup = now;
 }
 
@@ -587,6 +725,7 @@ static int rist_prometheus_stats_format(struct rist_prometheus_stats *ctx) {
 		return 0;
 	}
 	req_size += rist_prometheus_format_sender_peer_stats(ctx, NULL, 0);
+	req_size += rist_prometheus_format_receiver_peer_stats(ctx, NULL, 0);
 	req_size += sizeof(PROMETHEUS_EOF) - 1;
 
 	if ((size_t)(req_size+1) > ctx->format_buf_len) {
@@ -596,6 +735,7 @@ static int rist_prometheus_stats_format(struct rist_prometheus_stats *ctx) {
 	int size = rist_prometheus_format_client_flow_stats(ctx, ctx->format_buf, (int)ctx->format_buf_len);
 
 	size += rist_prometheus_format_sender_peer_stats(ctx, &ctx->format_buf[size], (int)ctx->format_buf_len - size);
+	size += rist_prometheus_format_receiver_peer_stats(ctx, &ctx->format_buf[size], (int)ctx->format_buf_len - size);
 	size += snprintf(&ctx->format_buf[size], ctx->format_buf_len - size, "%s", PROMETHEUS_EOF);
 	for (size_t i=0; i < ctx->client_cnt; i++) {
 		ctx->clients[i]->container_count = 0;
@@ -604,6 +744,10 @@ static int rist_prometheus_stats_format(struct rist_prometheus_stats *ctx) {
 	for (size_t i=0; i < ctx->sender_peer_cnt; i++) {
 		ctx->sender_peers[i]->container_count = 0;
 		ctx->sender_peers[i]->container_offset = 0;
+	}
+	for (size_t i=0; i < ctx->receiver_peer_cnt; i++) {
+		ctx->receiver_peers[i]->container_count = 0;
+		ctx->receiver_peers[i]->container_offset = 0;
 	}
 	return size;
 }
@@ -895,6 +1039,11 @@ void rist_prometheus_stats_destroy(struct rist_prometheus_stats *ctx) {
 		free(ctx->sender_peers[i]);
 	}
 	free(ctx->sender_peers);
+	for (size_t i=0; i < ctx->receiver_peer_cnt; i++) {
+		free(ctx->receiver_peers[i]->tags);
+		free(ctx->receiver_peers[i]);
+	}
+	free(ctx->receiver_peers);
 
 #if HAVE_LIBMICROHTTPD
 	if (ctx->httpd != NULL)

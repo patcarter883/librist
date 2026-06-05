@@ -6,7 +6,83 @@ Recommendations TR-06-1 (Simple Profile), TR-06-2 (Main Profile),
 and TR-06-3 (Advanced Profile).
 
 
-Changes for 0.2.17 (pre-release):
+Changes for 0.2.18 (pre-release):
+---------------------------------
+
+ABI/API:
+  - RIST_PEER_CONFIG_VERSION bumped from 2 to 3 (one new field:
+    srp_compat_legacy).  Existing zero-initialised peer configs
+    continue to work; the new field defaults to 0 (spec-compliant).
+
+Bug Fixes:
+  - Windows XP support restored: rist_transport_poll() now uses
+    select() via the existing contrib/poll_win.c shim instead of
+    WSAPoll() (Vista+ only).  Regression introduced in 0.2.17.
+  - rist_peer_recv() now accepts both canonical numeric EAGAIN errno
+    values (11 and 35) when a custom transport_ops backend signals
+    "no data ready", protecting cross-compile environments where the
+    EAGAIN macro can resolve differently across translation units.
+  - librist/transport.h now defines ssize_t on Windows (#214), so
+    downstream consumers no longer have to provide their own typedef.
+  - Prometheus exporter: counter rows in multiple_metric_datapoints
+    mode now have a space between the value and the timestamp.
+    Affected every existing _total row.
+  - Receiver flow stats: bitrate, bitrate_retries, bitrate_rejected
+    and bitrate_ts_nulls now decay to zero when the corresponding
+    traffic stops, instead of remaining frozen at the last value
+    computed while traffic was still flowing (#217).
+
+SRP interoperability:
+  - 0.2.16 made TLS-SRP RFC 5054 / TR-06-2 compliant by adding the
+    PAD operation to the u and k hash inputs.  As a side effect,
+    SRP-authenticated peers running 0.2.15 or earlier (which omitted
+    the PAD) will not handshake with 0.2.16+.  Upgrading both ends
+    to 0.2.16+ remains the recommended fix.
+  - New URL parameter for transitional interop:
+        ?srp-compat=legacy
+    On both ends of the SRP exchange, this opts the SRP wire format
+    back into the pre-0.2.16 unpadded form.  Must be set on BOTH
+    sides; mixed configuration will still fail.  An explicit WARN
+    is logged on startup when the option is active.  Intended only
+    as an escape hatch while older deployments are upgraded.
+  - When an SRP handshake fails, the authenticator (and the client
+    on M2 mismatch) now emits a single INFO hint pointing at the
+    srp-compat=legacy escape hatch.  The hint is advisory only —
+    the SRP-6a transcript binds M1 to the authenticator's wire-mode
+    B, so there is no purely-local way to distinguish "wrong
+    password" from "peer is on the other wire format" once the
+    handshake has reached M1.  No action required for non-SRP
+    deployments.
+
+CI / Test Coverage:
+  - srp_unit_test now runs in test-ubuntu.  cmocka is sourced via a
+    new subprojects/cmocka.wrap (WrapDB 1.1.8-1) so the test builds
+    even on runner images that do not ship libcmocka-dev, closing the
+    silent-skip gap that hid the SRP fixture drift reported in #215.
+    Test fixtures regenerated for the PAD-compliant SRP exchange
+    against the 2048-bit RFC 5054 group.  Added four end-to-end tests
+    covering both PAD and legacy modes plus the two cross-mode failure
+    cases.
+
+Tools:
+  - ristsender: new --blind-send option.  Decouples the sender from
+    RIST peer state — multicast input groups are joined immediately
+    and incoming UDP data is written to the RIST context regardless
+    of whether any output peer has connected.  Intended for
+    fire-and-forget broadcast topologies (multicast output in
+    simple/main/advanced profile, or ristsender used as a relay /
+    fan-out in front of non-RIST consumers).
+  - Prometheus exporter: new per-peer receiver metric block
+    rist_receiver_peer_* with labels {peer_id, flow_id,
+    receiver_id}, mirroring rist_sender_peer_*.  Auto-registered
+    from rist_stats_receiver_flow.peers[].
+  - Prometheus exporter: new client-flow gauge
+    rist_client_flow_avg_buffer_time_seconds reporting the dynamic
+    receiver buffer fill level (sourced from avg_buffer_time in
+    rist_stats_receiver_flow, converted from ms to seconds).
+
+
+Changes for 0.2.17:
 ---------------------------------
 
 ABI/API:

@@ -56,7 +56,10 @@ struct __attribute__((packed)) sname sbody;
 #ifdef _WIN64
 #ifdef __GNUC__
 #ifndef __MINGW32__
+#ifndef _SSIZE_T_DEFINED
 typedef long long ssize_t;
+#define _SSIZE_T_DEFINED
+#endif
 enum
 {
     POLLERR=0x1,
@@ -80,10 +83,16 @@ struct pollfd;
 #endif
 #else
 #include <stdint.h>
+#ifndef _SSIZE_T_DEFINED
 typedef int64_t ssize_t;
+#define _SSIZE_T_DEFINED
+#endif
 #endif
 #else
+#ifndef _SSIZE_T_DEFINED
 typedef signed int ssize_t;
+#define _SSIZE_T_DEFINED
+#endif
 #endif
 #endif
 

@@ -191,6 +191,9 @@ int parse_url_options(const char* url, struct rist_peer_config *output_peer_conf
 				strncpy((void *)output_peer_config->srp_username, val, 256 -1);
 			} else if (strcmp( url_params[i].key, RIST_URL_PARAM_SRP_PASSWORD) == 0) {
 				strncpy((void *)output_peer_config->srp_password, val, 256 -1);
+			} else if (strcmp( url_params[i].key, RIST_URL_PARAM_SRP_COMPAT) == 0) {
+				output_peer_config->srp_compat_legacy =
+					(strcmp(val, "legacy") == 0 || strcmp(val, "1") == 0) ? 1 : 0;
 			} else if (strcmp( url_params[i].key, RIST_URL_PARAM_CNAME ) == 0) {
 				strncpy((void *)output_peer_config->cname, val, 128-1);
 			} else if (strcmp( url_params[i].key, RIST_URL_PARAM_AES_TYPE ) == 0) {
@@ -1638,6 +1641,39 @@ void rist_calculate_bitrate(size_t len, struct rist_bandwidth_estimation *bw)
 	}
 }
 
+/* Recompute bw->bitrate using zero new bytes so the value decays to
+ * zero when the stats tick fires but no packets have arrived on this
+ * counter since the last tick. Mirrors what rist_calculate_bitrate(0,
+ * ...) does for peer-side counters, deliberately skipping the per-flow
+ * inter-packet-spacing bookkeeping that lives in
+ * rist_calculate_flow_bitrate(). */
+void rist_refresh_flow_bitrate(struct rist_bandwidth_estimation *bw)
+{
+	if (!bw->last_bitrate_calctime)
+		return;
+
+	struct timeval tv;
+	gettimeofday(&tv, NULL);
+	uint64_t now = (uint64_t)tv.tv_sec * 1000000;
+	now += tv.tv_usec;
+
+	uint64_t time_fast = now - bw->last_bitrate_calctime_fast;
+	if (time_fast >= 100000 /* 100 ms */) {
+		bw->bitrate_fast = (size_t)((8 * bw->bytes_fast * 1000000) / time_fast);
+		bw->eight_times_bitrate_fast += bw->bitrate_fast - bw->eight_times_bitrate_fast / 8;
+		bw->last_bitrate_calctime_fast = now;
+		bw->bytes_fast = 0;
+	}
+
+	uint64_t time = now - bw->last_bitrate_calctime;
+	if (time >= 1000000 /* 1 second */) {
+		bw->bitrate = (size_t)((8 * bw->bytes * 1000000) / time);
+		bw->eight_times_bitrate += bw->bitrate - bw->eight_times_bitrate / 8;
+		bw->last_bitrate_calctime = now;
+		bw->bytes = 0;
+	}
+}
+
 static void rist_calculate_flow_bitrate(struct rist_flow *flow, size_t len, struct rist_bandwidth_estimation *bw)
 {
 	struct timeval tv;
@@ -2600,7 +2636,11 @@ static void rist_peer_recv(struct evsocket_ctx *evctx, int fd, short revents, vo
 	if (ret <= 0) {
 		*again = false;
 		int errorcode = errno;
-		if (errno == EAGAIN || errno == EWOULDBLOCK)
+		/* Custom transports compiled in a different TU may have EAGAIN
+		 * resolve to a different numeric value than this TU; match both
+		 * canonical values defensively. */
+		if (errno == EAGAIN || errno == EWOULDBLOCK ||
+		    (ret == -1 && (errorcode == 11 || errorcode == 35)))
 				return;
 #else
 	if (ret == SOCKET_ERROR) {
@@ -4388,6 +4428,7 @@ static void store_peer_settings(const struct rist_peer_config *settings, struct 
 	peer->config.timing_mode = settings->timing_mode;
 	peer->config.virt_dst_port = settings->virt_dst_port;
 	peer->config.reflector = settings->reflector;
+	peer->config.srp_compat_legacy = settings->srp_compat_legacy; //read by rist_enable_eap_srp_2 after peer_create
 
 	init_peer_settings(peer);
 }

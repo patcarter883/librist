@@ -15,6 +15,11 @@
 #ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <basetsd.h>     /* SSIZE_T; lowercase spelling for mingw cross-builds */
+#ifndef _SSIZE_T_DEFINED
+typedef SSIZE_T ssize_t;
+#define _SSIZE_T_DEFINED
+#endif
 #else
 #include <sys/types.h>
 #include <sys/socket.h>

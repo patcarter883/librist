@@ -98,7 +98,7 @@ struct rist_stats_receiver_flow
 	uint32_t rtt;
 	/* peers */
 	struct rist_stats_receiver_peer *peers;
-	/* average buffer duration in microseconds (dynamic RIST receiver buffer fill level) */
+	/* average buffer duration in milliseconds (dynamic RIST receiver buffer fill level) */
 	uint64_t avg_buffer_time;
 	/* total data bytes received (payload only, excluding headers) */
 	uint64_t received_bytes;

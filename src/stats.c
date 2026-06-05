@@ -317,6 +317,11 @@ void rist_receiver_flow_statistics(struct rist_receiver *ctx, struct rist_flow *
 	cJSON_AddNumberToObject(json_stats, "min_inter_packet_spacing", (double)flow->stats_instant.min_ips);
 	cJSON_AddNumberToObject(json_stats, "cur_inter_packet_spacing", (double)flow->stats_instant.cur_ips);
 	cJSON_AddNumberToObject(json_stats, "max_inter_packet_spacing", (double)flow->stats_instant.max_ips);
+	/* Decay flow bitrate counters when no traffic has arrived since the last tick. */
+	rist_refresh_flow_bitrate(&flow->bw);
+	rist_refresh_flow_bitrate(&flow->bw_retries);
+	rist_refresh_flow_bitrate(&flow->bw_rejected);
+	rist_refresh_flow_bitrate(&flow->bw_tsnull);
 	cJSON_AddNumberToObject(json_stats, "bitrate", (double)flow->bw.bitrate);
 	cJSON_AddNumberToObject(json_stats, "bitrate_retries", (double)flow->bw_retries.bitrate);
 	cJSON_AddNumberToObject(json_stats, "bitrate_rejected", (double)flow->bw_rejected.bitrate);

@@ -686,7 +686,17 @@ static int receiver_enqueue(struct rist_peer *peer, uint64_t source_time, uint64
 			if (f->short_seq)
 				steps_since_previous = (uint16_t)steps_since_previous;
 			packet_time = previous->packet_time + (time_per_step * steps_since_previous);
-			assert(packet_time < next->packet_time);
+			/* The interpolation above assumes CBR. A VBR source (or a neighbour
+			   mismatch across a seq wrap) can make the estimate land at/after
+			   next->packet_time. Clamp to preserve strict ordering instead of
+			   aborting the process (was: assert(packet_time < next->packet_time)).
+			   Logged at DEBUG so a constant trigger (=> bad neighbour selection)
+			   is still visible without crashing. */
+			if (RIST_UNLIKELY(packet_time >= next->packet_time)) {
+				rist_log_priv(get_cctx(peer), RIST_LOG_DEBUG,
+					"retry interp overshoot for seq %" PRIu32 ", clamping packet_time\n", seq);
+				packet_time = next->packet_time - 1;
+			}
 		} else if (next)
 		{
 			packet_time = next->packet_time;
